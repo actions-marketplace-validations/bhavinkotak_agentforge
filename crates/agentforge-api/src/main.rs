@@ -1,4 +1,4 @@
-use std::sync::{atomic::AtomicI64, Arc};
+use std::sync::Arc;
 
 use agentforge_api::{router, AppState};
 use agentforge_db::create_pool;

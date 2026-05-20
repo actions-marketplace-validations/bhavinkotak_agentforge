@@ -1,7 +1,7 @@
 use agentforge_core::{AgentFile, Result, Scenario, Trace};
 use agentforge_runner::{AgentRunner, LlmClient, RunnerConfig};
 use agentforge_scorer::ScorerConfig;
-use rand::Rng;
+use rand::RngExt;
 use std::sync::Arc;
 use uuid::Uuid;
 
