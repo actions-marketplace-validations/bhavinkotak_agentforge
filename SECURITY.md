@@ -14,7 +14,7 @@
 Report vulnerabilities privately via one of the following channels:
 
 - **GitHub Security Advisories** (preferred): [Report a vulnerability](https://github.com/bhavinkotak/agentforge/security/advisories/new)
-- **Email**: security@agentforge.dev
+- **GitHub DM**: Reach the maintainer at [@bhavinkotak](https://github.com/bhavinkotak) via GitHub
 
 Include as much detail as possible:
 - Description of the vulnerability and its potential impact

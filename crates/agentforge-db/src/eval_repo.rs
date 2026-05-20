@@ -235,6 +235,22 @@ impl EvalRepo {
         Ok(results)
     }
 
+    pub async fn list_all(&self, limit: i64, offset: i64) -> Result<Vec<EvalRun>> {
+        let rows: Vec<(uuid::Uuid,)> =
+            sqlx::query_as("SELECT id FROM eval_runs ORDER BY created_at DESC LIMIT $1 OFFSET $2")
+                .bind(limit)
+                .bind(offset)
+                .fetch_all(&self.pool)
+                .await
+                .map_err(db_err)?;
+
+        let mut results = Vec::new();
+        for (id,) in rows {
+            results.push(self.find_by_id(id).await?);
+        }
+        Ok(results)
+    }
+
     pub async fn save_error(&self, id: Uuid, message: &str) -> Result<()> {
         sqlx::query!(
             r#"

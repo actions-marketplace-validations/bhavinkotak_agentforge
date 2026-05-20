@@ -33,6 +33,23 @@ pub fn parse_agent_file(content: &str) -> Result<ParsedAgentFile> {
     })
 }
 
+/// Like `parse_agent_file` but uses an explicitly supplied format instead of auto-detecting.
+/// Useful when the file extension is misleading or the user wants to override detection.
+pub fn parse_agent_file_with_format(
+    content: &str,
+    format: AgentFileFormat,
+) -> Result<ParsedAgentFile> {
+    let value = parse_to_value(content, &format)?;
+    let agent = formats::normalize(&format, &value, content)?;
+    let sha = compute_sha256(content);
+    Ok(ParsedAgentFile {
+        agent,
+        format,
+        sha,
+        raw_content: content.to_string(),
+    })
+}
+
 /// Build an `AgentVersion` from a `ParsedAgentFile`.
 pub fn to_agent_version(parsed: ParsedAgentFile) -> AgentVersion {
     let now = Utc::now();

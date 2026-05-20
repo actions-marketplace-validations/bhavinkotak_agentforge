@@ -63,6 +63,11 @@ services:
       - agentforge-api
     ports:
       - "3000:80"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:80"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
     restart: unless-stopped
 
 volumes:

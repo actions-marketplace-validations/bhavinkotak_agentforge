@@ -317,7 +317,9 @@ agentforge <COMMAND> [OPTIONS]
 Commands:
   run      Run a full eval cycle (parse → generate → run → score → optimize → gate)
   diff     Show scorecard diff between two agent versions
+             Usage: agentforge diff <version-id-1> <version-id-2>
   promote  Promote a candidate version to champion
+             Usage: agentforge promote <run-id>
   help     Print help
 
 Options for `run`:
@@ -330,6 +332,7 @@ Options for `run`:
   --threshold <F>              Pass threshold 0.0–1.0 (default: 0.85)
   --output-json <FILE>         Write full scorecard JSON to FILE (used by the GitHub Action)
   --dry-run                    Validate agent file and preview scenario count; no LLM calls made
+  --agent-format <FMT>         Override format detection: native_yaml | openai_json | anthropic_json | langchain_yaml | crewai_yaml | copilot_agent_md
   --weight-task <F>            Override task-completion weight (default: 0.35)
   --weight-tool <F>            Override tool-selection weight (default: 0.20)
   --weight-args <F>            Override argument-correctness weight (default: 0.20)
@@ -360,9 +363,10 @@ An **OpenAPI 3.1 spec** is available at [docs/openapi.yaml](docs/openapi.yaml) a
 | `GET` | `/api/v1/agents` | List all registered agent versions (paginated: `?limit=50&offset=0`) |
 | `POST` | `/api/v1/agents` | Upload and register a new agent version |
 | `GET` | `/api/v1/agents/:id` | Get agent version by ID |
+| `GET` | `/api/v1/runs` | List all eval runs (paginated: `?limit=50&offset=0`) |
 | `POST` | `/api/v1/runs` | Start a new eval run |
 | `GET` | `/api/v1/runs/:id` | Get run status and results |
-| `GET` | `/api/v1/runs/:id/traces` | List all traces for a run |
+| `GET` | `/api/v1/runs/:id/traces` | List traces for a run (paginated: `?limit=100&offset=0`, max 500) |
 | `GET` | `/api/v1/agents/:id1/diff/:id2` | Scorecard diff between two versions |
 | `POST` | `/api/v1/agents/:id/promote` | Promote version to champion |
 | `GET` | `/health` | Health check |
@@ -457,6 +461,18 @@ All configuration is via environment variables. See [`.env.example`](.env.exampl
 | `AGENTFORGE_SCORE_GATE_DELTA` | `0.03` | Required score improvement to promote |
 | `AGENTFORGE_REGRESSION_GATE_THRESHOLD` | `0.99` | Required pass-rate on champion scenarios |
 | `AGENTFORGE_STABILITY_SEEDS` | `3` | Seeds required for stability gate |
+| `AGENTFORGE_WEIGHT_TASK` | `0.35` | Task-completion scoring weight |
+| `AGENTFORGE_WEIGHT_TOOL` | `0.20` | Tool-selection scoring weight |
+| `AGENTFORGE_WEIGHT_ARGS` | `0.20` | Argument-correctness scoring weight |
+| `AGENTFORGE_WEIGHT_SCHEMA` | `0.15` | Schema-compliance scoring weight |
+| `AGENTFORGE_WEIGHT_INSTR` | `0.07` | Instruction-adherence scoring weight |
+| `AGENTFORGE_WEIGHT_PATH` | `0.03` | Path-efficiency scoring weight |
+| `AGENTFORGE_OLLAMA_BASE_URL` | `http://localhost:11434/v1` | Base URL for Ollama (OpenAI-compatible API) |
+| `AGENTFORGE_NVIDIA_BASE_URL` | `https://integrate.api.nvidia.com/v1` | Base URL for NVIDIA NIM |
+
+> **`REDIS_URL` vs `AGENTFORGE_*`:** Redis uses the bare `REDIS_URL` key (compatible with most hosting platforms). All other app-level settings use the `AGENTFORGE_` prefix.
+
+> **`AGENTFORGE_HOST` default:** The server binds to `127.0.0.1` by default for security (localhost only). Set to `0.0.0.0` to accept external connections — docker-compose overrides this automatically for container networking.
 
 ---
 
@@ -557,6 +573,7 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           DATABASE_URL: ${{ secrets.AGENTFORGE_DATABASE_URL }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}   # enables PR comment
       - name: Report scorecard
         if: always()
         run: |
@@ -641,6 +658,10 @@ jobs:
           POSTGRES_DB: agentforge
         ports:
           - 5432:5432
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
 
     steps:
       - uses: actions/checkout@v4
@@ -659,6 +680,7 @@ jobs:
       - name: Run AgentForge Evaluation
         env:
           DATABASE_URL: postgres://agentforge:agentforge@localhost:5432/agentforge
+          REDIS_URL: redis://localhost:6379
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
           ./target/release/agentforge run \
@@ -715,7 +737,8 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for dev environment setup, commit message
 | Benchmark comparison | Compare against GAIA, AgentBench, WebArena |
 | Observability hooks | Export traces to Datadog, Grafana, LangSmith, or any OTLP backend |
 | Cost optimizer | Recommend model downgrades when smaller models score equivalently |
-| Web dashboard | React UI with leaderboard, trace replay, diff viewer, human review queue |
+
+> **Web dashboard** (`web/`) is already included in this repo and served via the Docker Compose stack on port 3000.
 
 ---
 

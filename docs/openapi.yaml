@@ -133,6 +133,32 @@ paths:
           $ref: "#/components/responses/InternalError"
 
   /api/v1/runs:
+    get:
+      tags: [runs]
+      summary: List all eval runs
+      description: Returns a paginated list of all eval runs ordered by creation time (newest first).
+      operationId: listRuns
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+            maximum: 200
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+      responses:
+        "200":
+          description: List of eval runs
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/EvalRun"
     post:
       tags: [runs]
       summary: Start a new evaluation run
@@ -188,6 +214,37 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Scorecard"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/runs/{id}/traces:
+    get:
+      tags: [runs]
+      summary: List traces for a run (paginated)
+      description: Returns a paginated list of traces. Default limit 100, maximum 500 per request.
+      operationId: listTraces
+      parameters:
+        - $ref: "#/components/parameters/RunId"
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 100
+            maximum: 500
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+      responses:
+        "200":
+          description: List of traces
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
         "404":
           $ref: "#/components/responses/NotFound"
 

@@ -1,5 +1,5 @@
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     response::Json,
 };
@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use uuid::Uuid;
 
-use agentforge_core::{AgentForgeError, EvalRun, EvalRunStatus};
+use agentforge_core::{AgentForgeError, EvalRun, EvalRunStatus, Trace};
 use agentforge_db::{
     agent_repo::AgentRepo, eval_repo::EvalRepo, scenario_repo::ScenarioRepo, trace_repo::TraceRepo,
 };
@@ -29,6 +29,18 @@ pub struct StartRunRequest {
     pub concurrency: Option<u32>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct ListRunsQuery {
+    pub limit: Option<i64>,
+    pub offset: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ListTracesQuery {
+    pub limit: Option<i64>,
+    pub offset: Option<i64>,
+}
+
 #[derive(Debug, Serialize)]
 pub struct RunResponse {
     pub id: Uuid,
@@ -46,6 +58,21 @@ impl From<EvalRun> for RunResponse {
             created_at: r.created_at,
         }
     }
+}
+
+/// GET /runs — list all eval runs (paginated)
+pub async fn list_runs(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<ListRunsQuery>,
+) -> ApiResult<Json<Vec<RunResponse>>> {
+    let eval_repo = EvalRepo::new(state.db.clone());
+    let limit = params.limit.unwrap_or(50).min(200);
+    let offset = params.offset.unwrap_or(0);
+    let runs = eval_repo
+        .list_all(limit, offset)
+        .await
+        .map_err(|e| ApiError::internal(e.to_string()))?;
+    Ok(Json(runs.into_iter().map(Into::into).collect()))
 }
 
 /// POST /runs — start a new evaluation run (returns 202 immediately, runs in background)
@@ -243,4 +270,20 @@ pub async fn get_scorecard(
         other => ApiError::internal(other.to_string()),
     })?;
     Ok(Json(run))
+}
+
+/// GET /runs/:id/traces — list traces for a run (paginated; default limit=100, max=500)
+pub async fn list_traces(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<Uuid>,
+    Query(params): Query<ListTracesQuery>,
+) -> ApiResult<Json<Vec<Trace>>> {
+    let trace_repo = TraceRepo::new(state.db.clone());
+    let limit = params.limit.unwrap_or(100).min(500);
+    let offset = params.offset.unwrap_or(0);
+    let traces = trace_repo
+        .list_by_run_paginated(id, limit, offset)
+        .await
+        .map_err(|e| ApiError::internal(e.to_string()))?;
+    Ok(Json(traces))
 }

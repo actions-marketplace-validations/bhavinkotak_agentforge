@@ -70,6 +70,11 @@ enum Commands {
         #[arg(long, default_value = "false")]
         dry_run: bool,
 
+        /// Override agent file format detection: native_yaml | openai_json | anthropic_json |
+        /// langchain_yaml | crewai_yaml | copilot_agent_md
+        #[arg(long)]
+        agent_format: Option<String>,
+
         /// Override weight for task-completion dimension (default: 0.35)
         #[arg(long)]
         weight_task: Option<f64>,
@@ -209,6 +214,7 @@ async fn run_command(command: Commands) -> Result<i32> {
             threshold,
             output_json,
             dry_run,
+            agent_format,
             weight_task,
             weight_tool,
             weight_args,
@@ -228,6 +234,7 @@ async fn run_command(command: Commands) -> Result<i32> {
                 threshold,
                 output_json,
                 dry_run,
+                agent_format,
                 weight_task,
                 weight_tool,
                 weight_args,
@@ -271,6 +278,7 @@ async fn cmd_run(
     threshold: f64,
     output_json: Option<PathBuf>,
     dry_run: bool,
+    agent_format: Option<String>,
     weight_task: Option<f64>,
     weight_tool: Option<f64>,
     weight_args: Option<f64>,
@@ -283,8 +291,16 @@ async fn cmd_run(
     let content = std::fs::read_to_string(&agent_path)
         .with_context(|| format!("Failed to read agent file: {}", agent_path.display()))?;
 
-    // Parse
-    let parsed = parse_agent_file(&content).with_context(|| "Failed to parse agent file")?;
+    // Parse (optionally with an explicit format override)
+    let parsed = if let Some(fmt_str) = &agent_format {
+        let fmt: agentforge_parser::AgentFileFormat = fmt_str
+            .parse()
+            .with_context(|| format!("Unknown agent format: {fmt_str}"))?;
+        agentforge_parser::parse_agent_file_with_format(&content, fmt)
+            .with_context(|| "Failed to parse agent file")?
+    } else {
+        parse_agent_file(&content).with_context(|| "Failed to parse agent file")?
+    };
 
     // Validate
     let validation = validate_agent_file(&parsed.agent);

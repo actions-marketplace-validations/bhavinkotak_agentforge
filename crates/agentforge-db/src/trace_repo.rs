@@ -154,6 +154,19 @@ impl TraceRepo {
             .collect()
     }
 
+    /// Paginated version of list_by_run.
+    pub async fn list_by_run_paginated(
+        &self,
+        run_id: Uuid,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<Trace>> {
+        let all = self.list_by_run(run_id).await?;
+        let offset = offset.max(0) as usize;
+        let limit = limit.max(0) as usize;
+        Ok(all.into_iter().skip(offset).take(limit).collect())
+    }
+
     /// Returns all scenario IDs that passed in a given run.
     pub async fn list_passing_scenario_ids(&self, run_id: Uuid) -> Result<Vec<Uuid>> {
         let rows = sqlx::query!(
