@@ -5,6 +5,7 @@ RUN apk add --no-cache musl-dev pkgconfig openssl-dev
 
 WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
+COPY src/ src/
 COPY crates/ crates/
 # Copy SQLx offline cache so builds work without a live DB
 COPY .sqlx/ .sqlx/
