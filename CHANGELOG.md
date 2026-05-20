@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.7](https://github.com/bhavinkotak/agentforge/compare/agentforge-v0.1.6...agentforge-v0.1.7) (2026-05-20)
+
+
+### Bug Fixes
+
+* Docker src/ copy, aarch64 cross-compiler + Dependabot dep bumps ([a33f935](https://github.com/bhavinkotak/agentforge/commit/a33f935894b4275d961c0d01fb93ea05ef6328d5))
+
 ## [0.1.6](https://github.com/bhavinkotak/agentforge/compare/agentforge-v0.1.5...agentforge-v0.1.6) (2026-05-20)
 
 
