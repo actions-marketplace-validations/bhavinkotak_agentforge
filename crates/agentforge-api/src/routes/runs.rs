@@ -361,3 +361,80 @@ pub async fn cancel_run(
         Err(ApiError::not_found(format!("Run {id} not found")))
     }
 }
+
+// ─── GET /runs/:id/progress (Server-Sent Events) ────────────────────────────
+
+/// GET /runs/:id/progress — real-time Server-Sent Events stream of run progress.
+///
+/// Emits a `progress` event every ~2 seconds with the current counts until the
+/// run reaches a terminal state (`complete`, `error`, or `cancelled`), at which
+/// point a final event is emitted and the stream closes.
+///
+/// Event format (JSON data field):
+/// ```json
+/// { "run_id": "...", "status": "running", "completed_count": 42, "scenario_count": 100, "error_count": 0 }
+/// ```
+///
+/// If the run is not found, an `error` event is sent and the stream closes immediately.
+/// The endpoint does NOT require the run to be in a running state — polling a
+/// completed run returns one event and closes.
+pub async fn run_progress(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<Uuid>,
+) -> axum::response::sse::Sse<
+    impl tokio_stream::Stream<Item = Result<axum::response::sse::Event, std::convert::Infallible>>,
+> {
+    use axum::response::sse::{Event, KeepAlive, Sse};
+    use tokio::sync::mpsc;
+    use tokio_stream::wrappers::ReceiverStream;
+
+    let (tx, rx) = mpsc::channel::<Result<Event, std::convert::Infallible>>(8);
+
+    tokio::spawn(async move {
+        loop {
+            let eval_repo = EvalRepo::new(state.db.clone());
+            match eval_repo.find_by_id(id).await {
+                Ok(run) => {
+                    let is_terminal = matches!(
+                        run.status,
+                        EvalRunStatus::Complete | EvalRunStatus::Error | EvalRunStatus::Cancelled
+                    );
+                    let data = serde_json::json!({
+                        "run_id": id,
+                        "status": run.status.to_string(),
+                        "completed_count": run.completed_count,
+                        "scenario_count": run.scenario_count,
+                        "error_count": run.error_count,
+                    });
+                    let ev = Event::default()
+                        .event("progress")
+                        .json_data(data)
+                        .unwrap_or_else(|_| Event::default().data("{}"));
+                    if tx.send(Ok(ev)).await.is_err() {
+                        // Client disconnected
+                        break;
+                    }
+                    if is_terminal {
+                        break;
+                    }
+                }
+                Err(AgentForgeError::NotFound { .. }) => {
+                    let ev = Event::default()
+                        .event("error")
+                        .data(format!("run {id} not found"));
+                    let _ = tx.send(Ok(ev)).await;
+                    break;
+                }
+                Err(e) => {
+                    let ev = Event::default().event("error").data(e.to_string());
+                    let _ = tx.send(Ok(ev)).await;
+                    break;
+                }
+            }
+
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        }
+    });
+
+    Sse::new(ReceiverStream::new(rx)).keep_alive(KeepAlive::default())
+}

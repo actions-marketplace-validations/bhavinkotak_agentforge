@@ -112,6 +112,11 @@ enum Commands {
         /// After the eval run, analyze cost and suggest cheaper model alternatives
         #[arg(long, default_value = "false")]
         cost_optimize: bool,
+
+        /// Re-run the evaluation automatically whenever the agent file is saved.
+        /// Useful for iterative local development. Press Ctrl-C to stop.
+        #[arg(long, default_value = "false")]
+        watch: bool,
     },
 
     /// Compare two agent versions
@@ -230,6 +235,7 @@ async fn run_command(command: Commands) -> Result<i32> {
             weight_path,
             red_team,
             cost_optimize,
+            watch,
         } => {
             cmd_run(
                 agent,
@@ -251,6 +257,7 @@ async fn run_command(command: Commands) -> Result<i32> {
                 weight_path,
                 red_team,
                 cost_optimize,
+                watch,
             )
             .await
         }
@@ -296,7 +303,32 @@ async fn cmd_run(
     weight_path: Option<f64>,
     red_team: bool,
     cost_optimize: bool,
+    watch: bool,
 ) -> Result<i32> {
+    if watch {
+        return cmd_run_watch(
+            agent_path,
+            scenario_count,
+            concurrency,
+            seed,
+            provider,
+            judge_provider,
+            threshold,
+            output_json,
+            dry_run,
+            max_cost,
+            agent_format,
+            weight_task,
+            weight_tool,
+            weight_args,
+            weight_schema,
+            weight_instr,
+            weight_path,
+            red_team,
+            cost_optimize,
+        )
+        .await;
+    }
     let content = std::fs::read_to_string(&agent_path)
         .with_context(|| format!("Failed to read agent file: {}", agent_path.display()))?;
 
@@ -631,6 +663,89 @@ async fn cmd_run(
         );
         Ok(1)
     }
+}
+
+/// Watch loop for `--watch` mode: runs the eval once, then polls the agent file's
+/// modification timestamp and re-runs whenever the file is saved.
+/// The loop runs forever until interrupted (Ctrl-C).
+///
+/// Returned as `Pin<Box<dyn Future>>` to break the mutual-recursion cycle between
+/// `cmd_run` and this function that Rust's async-fn size-checker would otherwise reject.
+#[allow(clippy::too_many_arguments)]
+fn cmd_run_watch(
+    agent_path: PathBuf,
+    scenario_count: u32,
+    concurrency: u32,
+    seed: u64,
+    provider: String,
+    judge_provider: String,
+    threshold: f64,
+    output_json: Option<PathBuf>,
+    dry_run: bool,
+    max_cost: Option<f64>,
+    agent_format: Option<String>,
+    weight_task: Option<f64>,
+    weight_tool: Option<f64>,
+    weight_args: Option<f64>,
+    weight_schema: Option<f64>,
+    weight_instr: Option<f64>,
+    weight_path: Option<f64>,
+    red_team: bool,
+    cost_optimize: bool,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<i32>> + Send>> {
+    Box::pin(async move {
+        use std::time::SystemTime;
+
+        eprintln!(
+            "Watch mode enabled — watching {:?} for changes. Press Ctrl-C to stop.",
+            agent_path
+        );
+
+        let get_mtime = |path: &std::path::Path| -> Option<SystemTime> {
+            std::fs::metadata(path).and_then(|m| m.modified()).ok()
+        };
+
+        loop {
+            // Run once (ignore exit code in watch mode — always continue)
+            let _exit_code = cmd_run(
+                agent_path.clone(),
+                scenario_count,
+                concurrency,
+                seed,
+                provider.clone(),
+                judge_provider.clone(),
+                threshold,
+                output_json.clone(),
+                dry_run,
+                max_cost,
+                agent_format.clone(),
+                weight_task,
+                weight_tool,
+                weight_args,
+                weight_schema,
+                weight_instr,
+                weight_path,
+                red_team,
+                cost_optimize,
+                false, // don't recurse into watch mode
+            )
+            .await;
+
+            // Poll for file modification every 500 ms
+            eprintln!(
+                "\nWaiting for changes to {:?} (Ctrl-C to stop)...",
+                agent_path
+            );
+            let last_mtime = get_mtime(&agent_path);
+            loop {
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                if get_mtime(&agent_path) != last_mtime {
+                    eprintln!("\nFile changed — re-running...\n");
+                    break;
+                }
+            }
+        }
+    })
 }
 
 async fn cmd_diff(v1: Uuid, v2: Uuid) -> Result<i32> {

@@ -142,7 +142,7 @@ agentforge/
     ├── agentforge-optimizer/   # Variant generation via prompt/tool mutation strategies
     ├── agentforge-gatekeeper/  # Three-gate promotion logic
     ├── agentforge-db/          # PostgreSQL repository layer (SQLx)
-    ├── agentforge-api/         # REST API (Axum 0.7)
+    ├── agentforge-api/         # REST API (Axum 0.8)
     └── agentforge-cli/         # CLI binary (Clap 4)
 ```
 
@@ -344,6 +344,8 @@ Options for `run`:
   --weight-path <F>            Override path-efficiency weight (default: 0.03)
   --red-team                   Append adversarial red-team probes to standard scenarios
   --cost-optimize              After eval, recommend cheaper model alternatives
+  --watch                      Re-run the evaluation automatically when the agent file is saved.
+                               Polls for file changes every 500 ms. Press Ctrl-C to stop.
 
 Exit codes:
   0  — All gates passed, version promoted (or no promotion needed)
@@ -375,6 +377,7 @@ An **OpenAPI 3.1 spec** is available at [docs/openapi.yaml](docs/openapi.yaml) a
 | `DELETE` | `/api/v1/runs/:id` | Cancel a pending/running eval run (sets status → `cancelled`) |
 | `GET` | `/api/v1/runs/:id/scorecard` | Full scorecard with per-dimension scores and failure clusters |
 | `GET` | `/api/v1/runs/:id/traces` | List traces for a run (paginated: `?limit=100&offset=0`, max 500) |
+| `GET` | `/api/v1/runs/:id/progress` | **Server-Sent Events** stream of live run progress (emits every ~2 s until terminal) |
 | `GET` | `/api/v1/diff` | Scorecard diff between two versions (`?v1=<uuid>&v2=<uuid>`) |
 | `POST` | `/api/v1/promote/:run_id` | Promote version to champion (runs all three gatekeeper gates) |
 | `GET` | `/health` | Liveness probe — exempt from API key authentication |
@@ -739,14 +742,14 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for dev environment setup, commit message
 | Component | Technology | Rationale |
 |-----------|-----------|-----------|
 | Language | **Rust** | Memory safety, zero-cost abstractions, deterministic performance |
-| API framework | Axum 0.7 | Async, ergonomic, tower-compatible middleware |
+| API framework | Axum 0.8 | Async, ergonomic, tower-compatible middleware |
 | Database | PostgreSQL 16 + SQLx 0.8 | Relational integrity + offline query checking |
 | Caching | Redis (deadpool-redis) | Run state, rate limit tracking |
 | LLM clients | reqwest 0.12 (rustls) | Async HTTP with TLS, no native deps |
 | CLI | Clap 4 (derive) | Zero-boilerplate argument parsing |
 | Async runtime | Tokio 1 (full) | Production async runtime |
 | Serialization | serde + serde_json + serde_yaml | Full format support |
-| Testing | tokio-test, mockall 0.13, wiremock 0.6 | Async mocks without external services |
+| Testing | tokio-test, mockall 0.14, wiremock 0.6 | Async mocks without external services |
 | Observability | tracing 0.1 + tracing-subscriber | Structured logs, span context |
 
 ---

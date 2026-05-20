@@ -37,6 +37,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/runs/:id", delete(routes::runs::cancel_run))
         .route("/runs/:id/scorecard", get(routes::runs::get_scorecard))
         .route("/runs/:id/traces", get(routes::runs::list_traces))
+        .route("/runs/:id/progress", get(routes::runs::run_progress))
         // Diff and promote
         .route("/diff", get(routes::diff::get_diff))
         .route("/promote/:run_id", post(routes::promote::promote_run))
