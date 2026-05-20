@@ -243,6 +243,15 @@ impl AgentRepo {
         Ok(())
     }
 
+    pub async fn delete(&self, id: Uuid) -> Result<bool> {
+        let result = sqlx::query("DELETE FROM agent_versions WHERE id = $1")
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(db_err)?;
+        Ok(result.rows_affected() > 0)
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn row_to_version(
         &self,

@@ -1,5 +1,5 @@
 use axum::{
-    routing::{get, post},
+    routing::{delete, get, post},
     Router,
 };
 use std::sync::Arc;
@@ -16,10 +16,12 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/agents", post(routes::agents::create_agent))
         .route("/agents", get(routes::agents::list_agents))
         .route("/agents/:id", get(routes::agents::get_agent))
+        .route("/agents/:id", delete(routes::agents::delete_agent))
         // Eval run endpoints
         .route("/runs", get(routes::runs::list_runs))
         .route("/runs", post(routes::runs::start_run))
         .route("/runs/:id", get(routes::runs::get_run))
+        .route("/runs/:id", delete(routes::runs::cancel_run))
         .route("/runs/:id/scorecard", get(routes::runs::get_scorecard))
         .route("/runs/:id/traces", get(routes::runs::list_traces))
         // Diff and promote

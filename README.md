@@ -332,6 +332,7 @@ Options for `run`:
   --threshold <F>              Pass threshold 0.0–1.0 (default: 0.85)
   --output-json <FILE>         Write full scorecard JSON to FILE (used by the GitHub Action)
   --dry-run                    Validate agent file and preview scenario count; no LLM calls made
+  --max-cost <USD>             Abort if estimated cost exceeds USD (e.g. --max-cost 5.00); 0 = no cap
   --agent-format <FMT>         Override format detection: native_yaml | openai_json | anthropic_json | langchain_yaml | crewai_yaml | copilot_agent_md
   --weight-task <F>            Override task-completion weight (default: 0.35)
   --weight-tool <F>            Override tool-selection weight (default: 0.20)
@@ -363,13 +364,20 @@ An **OpenAPI 3.1 spec** is available at [docs/openapi.yaml](docs/openapi.yaml) a
 | `GET` | `/api/v1/agents` | List all registered agent versions (paginated: `?limit=50&offset=0`) |
 | `POST` | `/api/v1/agents` | Upload and register a new agent version |
 | `GET` | `/api/v1/agents/:id` | Get agent version by ID |
+| `DELETE` | `/api/v1/agents/:id` | Delete an agent version (blocked if it is the current champion) |
 | `GET` | `/api/v1/runs` | List all eval runs (paginated: `?limit=50&offset=0`) |
-| `POST` | `/api/v1/runs` | Start a new eval run |
+| `POST` | `/api/v1/runs` | Start a new eval run (rate-limited by `AGENTFORGE_MAX_CONCURRENT_RUNS`) |
 | `GET` | `/api/v1/runs/:id` | Get run status and results |
+| `DELETE` | `/api/v1/runs/:id` | Cancel a pending/running eval run (sets status → `cancelled`) |
 | `GET` | `/api/v1/runs/:id/traces` | List traces for a run (paginated: `?limit=100&offset=0`, max 500) |
 | `GET` | `/api/v1/agents/:id1/diff/:id2` | Scorecard diff between two versions |
 | `POST` | `/api/v1/agents/:id/promote` | Promote version to champion |
 | `GET` | `/health` | Health check |
+
+> **Concurrency limit on `POST /runs`:** to prevent accidental LLM cost floods, the server rejects new
+> eval-run requests with HTTP 429 when `AGENTFORGE_MAX_CONCURRENT_RUNS` active background tasks are
+> already running (default: `10`). For high-throughput CI, raise this value in your deployment env.
+> For per-client rate limiting, place a reverse proxy (nginx / Cloudflare) in front of the API.
 
 ### Example: Start an eval run
 
@@ -452,6 +460,7 @@ All configuration is via environment variables. See [`.env.example`](.env.exampl
 | `AGENTFORGE_HOST` | `127.0.0.1` | API server bind address |
 | `AGENTFORGE_PORT` | `8080` | API server port |
 | `AGENTFORGE_LOG_LEVEL` | `info` | Log level (trace/debug/info/warn/error) |
+| `AGENTFORGE_MAX_CONCURRENT_RUNS` | `10` | Max simultaneous background eval runs (HTTP 429 when exceeded) |
 | `AGENTFORGE_JUDGE_PROVIDER` | `openai` | LLM provider for the judge |
 | `AGENTFORGE_JUDGE_MODEL` | `gpt-4o` | Judge model ID |
 | `AGENTFORGE_DEFAULT_SCENARIOS` | `100` | Default scenario count per run |

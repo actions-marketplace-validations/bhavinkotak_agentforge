@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{atomic::AtomicI64, Arc};
 
 use agentforge_api::{router, AppState};
 use agentforge_db::create_pool;
@@ -55,12 +55,19 @@ async fn main() -> anyhow::Result<()> {
     let trace_exporter: Arc<dyn agentforge_observability::TraceExporter> =
         Arc::from(build_exporter());
 
+    let max_concurrent_runs: i64 = std::env::var("AGENTFORGE_MAX_CONCURRENT_RUNS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(10);
+
     let state = Arc::new(AppState {
         db,
         llm_client,
         scorer_config,
         gatekeeper_config,
         trace_exporter,
+        active_runs: Arc::new(std::sync::atomic::AtomicI64::new(0)),
+        max_concurrent_runs,
     });
 
     let host = std::env::var("AGENTFORGE_HOST").unwrap_or_else(|_| "0.0.0.0".to_string());

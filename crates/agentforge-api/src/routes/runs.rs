@@ -15,6 +15,7 @@ use agentforge_db::{
 use agentforge_runner::{AgentRunner, RunnerConfig};
 use agentforge_scenarios::ScenarioGeneratorConfig;
 use agentforge_scorer::score_run;
+use std::sync::atomic::Ordering;
 
 use crate::{
     error::{ApiError, ApiResult},
@@ -76,10 +77,22 @@ pub async fn list_runs(
 }
 
 /// POST /runs — start a new evaluation run (returns 202 immediately, runs in background)
+///
+/// Concurrency-limited by `AGENTFORGE_MAX_CONCURRENT_RUNS` (default 10).
+/// Returns HTTP 429 when the limit is reached.
 pub async fn start_run(
     State(state): State<Arc<AppState>>,
     Json(req): Json<StartRunRequest>,
 ) -> ApiResult<(StatusCode, Json<RunResponse>)> {
+    // Concurrency guard: reject new runs when too many are already running
+    let current = state.active_runs.fetch_add(1, Ordering::SeqCst);
+    if current >= state.max_concurrent_runs {
+        state.active_runs.fetch_sub(1, Ordering::SeqCst);
+        return Err(ApiError::unprocessable(format!(
+            "Too many concurrent evaluation runs ({current} active). \
+             Retry after an existing run completes, or increase AGENTFORGE_MAX_CONCURRENT_RUNS."
+        )));
+    }
     let agent_repo = AgentRepo::new(state.db.clone());
     let agent_version = agent_repo
         .find_by_id(req.agent_id)
@@ -186,12 +199,14 @@ async fn run_evaluation_background(
         Ok(s) => s,
         Err(e) => {
             let _ = eval_repo.save_error(run_id, &e.to_string()).await;
+            state.active_runs.fetch_sub(1, Ordering::SeqCst);
             return;
         }
     };
 
     if let Err(e) = scenario_repo.insert_batch(&scenarios).await {
         let _ = eval_repo.save_error(run_id, &e.to_string()).await;
+        state.active_runs.fetch_sub(1, Ordering::SeqCst);
         return;
     }
 
@@ -216,6 +231,7 @@ async fn run_evaluation_background(
         Ok(s) => s,
         Err(e) => {
             let _ = eval_repo.save_error(run_id, &e.to_string()).await;
+            state.active_runs.fetch_sub(1, Ordering::SeqCst);
             return;
         }
     };
@@ -243,6 +259,7 @@ async fn run_evaluation_background(
     let _ = eval_repo
         .update_status(run_id, &EvalRunStatus::Complete)
         .await;
+    state.active_runs.fetch_sub(1, Ordering::SeqCst);
     tracing::info!(%run_id, aggregate = scorecard.aggregate_score, passed = scorecard.passed, errors = scorecard.errors, "Evaluation complete");
 }
 
@@ -286,4 +303,24 @@ pub async fn list_traces(
         .await
         .map_err(|e| ApiError::internal(e.to_string()))?;
     Ok(Json(traces))
+}
+
+/// DELETE /runs/:id
+///
+/// Cancels a pending/running eval run, or no-ops if already terminal.
+/// Returns 204 on success, 404 if the run does not exist.
+pub async fn cancel_run(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<Uuid>,
+) -> ApiResult<StatusCode> {
+    let eval_repo = EvalRepo::new(state.db.clone());
+    let affected = eval_repo
+        .cancel_or_delete(id)
+        .await
+        .map_err(|e| ApiError::internal(e.to_string()))?;
+    if affected {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(ApiError::not_found(format!("Run {id} not found")))
+    }
 }

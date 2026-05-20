@@ -3,7 +3,7 @@ use agentforge_gatekeeper::GatekeeperConfig;
 use agentforge_observability::TraceExporter;
 use agentforge_runner::LlmClient;
 use agentforge_scorer::ScorerConfig;
-use std::sync::Arc;
+use std::sync::{atomic::AtomicI64, Arc};
 
 /// Shared application state injected into all route handlers.
 pub struct AppState {
@@ -12,4 +12,10 @@ pub struct AppState {
     pub scorer_config: ScorerConfig,
     pub gatekeeper_config: GatekeeperConfig,
     pub trace_exporter: Arc<dyn TraceExporter>,
+    /// Counts currently active evaluation runs (background tasks).
+    /// `POST /runs` is rejected with 429 when this exceeds `AGENTFORGE_MAX_CONCURRENT_RUNS`
+    /// (default: 10). Prevents accidental runaway LLM cost from flooding the queue.
+    pub active_runs: Arc<AtomicI64>,
+    /// Maximum number of concurrently active evaluation runs.
+    pub max_concurrent_runs: i64,
 }

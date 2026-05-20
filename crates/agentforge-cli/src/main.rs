@@ -70,6 +70,12 @@ enum Commands {
         #[arg(long, default_value = "false")]
         dry_run: bool,
 
+        /// Abort before any LLM calls if the estimated cost exceeds USD <DOLLARS>.
+        /// Estimation uses scenario_count × average tokens × provider price.
+        /// Set to 0 to disable the cap.
+        #[arg(long)]
+        max_cost: Option<f64>,
+
         /// Override agent file format detection: native_yaml | openai_json | anthropic_json |
         /// langchain_yaml | crewai_yaml | copilot_agent_md
         #[arg(long)]
@@ -214,6 +220,7 @@ async fn run_command(command: Commands) -> Result<i32> {
             threshold,
             output_json,
             dry_run,
+            max_cost,
             agent_format,
             weight_task,
             weight_tool,
@@ -234,6 +241,7 @@ async fn run_command(command: Commands) -> Result<i32> {
                 threshold,
                 output_json,
                 dry_run,
+                max_cost,
                 agent_format,
                 weight_task,
                 weight_tool,
@@ -278,6 +286,7 @@ async fn cmd_run(
     threshold: f64,
     output_json: Option<PathBuf>,
     dry_run: bool,
+    max_cost: Option<f64>,
     agent_format: Option<String>,
     weight_task: Option<f64>,
     weight_tool: Option<f64>,
@@ -317,6 +326,26 @@ async fn cmd_run(
         );
         return Ok(2);
     }
+
+    // Pre-flight cost cap: ~1 500 tokens/scenario × 2 LLM calls (agent + judge)
+    // Price assumptions (conservative, gpt-4o): $0.005 / 1K tokens output
+    const AVG_TOKENS_PER_SCENARIO: f64 = 1_500.0;
+    const PRICE_PER_1K_TOKENS: f64 = 0.005;
+    let estimated_cost =
+        (scenario_count as f64) * AVG_TOKENS_PER_SCENARIO * 2.0 / 1_000.0 * PRICE_PER_1K_TOKENS;
+    if let Some(cap) = max_cost {
+        if cap > 0.0 && estimated_cost > cap {
+            eprintln!(
+                "Estimated cost ${:.2} exceeds --max-cost ${:.2}. Aborting.",
+                estimated_cost, cap
+            );
+            return Ok(2);
+        }
+    }
+    eprintln!(
+        "Estimated cost: ~${:.2} ({scenario_count} scenarios)",
+        estimated_cost
+    );
 
     let agent_file = parsed.agent.clone();
     let format = parsed.format.clone();

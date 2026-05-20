@@ -127,3 +127,35 @@ pub async fn list_agents(
         .map_err(|e| ApiError::internal(e.to_string()))?;
     Ok(Json(agents.into_iter().map(Into::into).collect()))
 }
+
+/// DELETE /agents/:id
+///
+/// Deletes the agent version. Returns 404 if not found, 409 if the agent is
+/// currently the champion (promote a different version first).
+pub async fn delete_agent(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<Uuid>,
+) -> ApiResult<StatusCode> {
+    let repo = AgentRepo::new(state.db.clone());
+    // Guard: refuse to delete the current champion
+    let agent = repo.find_by_id(id).await.map_err(|e| match e {
+        agentforge_core::AgentForgeError::NotFound { .. } => {
+            ApiError::not_found(format!("Agent {id} not found"))
+        }
+        other => ApiError::internal(other.to_string()),
+    })?;
+    if agent.is_champion {
+        return Err(ApiError::conflict(
+            "Cannot delete the current champion. Promote a different version first.",
+        ));
+    }
+    let deleted = repo
+        .delete(id)
+        .await
+        .map_err(|e| ApiError::internal(e.to_string()))?;
+    if deleted {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(ApiError::not_found(format!("Agent {id} not found")))
+    }
+}

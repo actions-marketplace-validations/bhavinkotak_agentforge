@@ -131,6 +131,22 @@ paths:
           $ref: "#/components/responses/NotFound"
         "500":
           $ref: "#/components/responses/InternalError"
+    delete:
+      tags: [agents]
+      summary: Delete an agent version
+      description: |
+        Permanently deletes the agent version. Returns 409 if the version is
+        the current champion — promote a different version first.
+      operationId: deleteAgent
+      parameters:
+        - $ref: "#/components/parameters/AgentId"
+      responses:
+        "204":
+          description: Deleted successfully
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: Cannot delete champion version
 
   /api/v1/runs:
     get:
@@ -162,6 +178,10 @@ paths:
     post:
       tags: [runs]
       summary: Start a new evaluation run
+      description: |
+        Queues an evaluation run in the background and returns 202 immediately.
+        Rejected with 422 when the number of active background runs reaches
+        `AGENTFORGE_MAX_CONCURRENT_RUNS` (default 10).
       operationId: startRun
       requestBody:
         required: true
@@ -180,6 +200,8 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "404":
           $ref: "#/components/responses/NotFound"
+        "422":
+          description: Too many concurrent runs — retry after an existing run finishes
         "500":
           $ref: "#/components/responses/InternalError"
 
@@ -197,6 +219,21 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/EvalRun"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    delete:
+      tags: [runs]
+      summary: Cancel an in-progress eval run
+      description: |
+        Transitions a pending or running eval run to `cancelled`. No-op if the
+        run has already completed or errored. Returns 404 if the run ID does not
+        exist.
+      operationId: cancelRun
+      parameters:
+        - $ref: "#/components/parameters/RunId"
+      responses:
+        "204":
+          description: Cancelled successfully
         "404":
           $ref: "#/components/responses/NotFound"
 

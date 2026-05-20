@@ -267,6 +267,30 @@ impl EvalRepo {
         .map_err(db_err)?;
         Ok(())
     }
+
+    /// Cancel a run that is still pending/running, or hard-delete a completed/errored run.
+    /// Returns `true` if a row was affected, `false` if the ID did not exist.
+    pub async fn cancel_or_delete(&self, id: Uuid) -> Result<bool> {
+        // If the run is still active, transition it to cancelled first so any
+        // in-flight background tasks can observe the status change.
+        let result = sqlx::query(
+            r#"
+            UPDATE eval_runs
+            SET status = CASE
+                WHEN status IN ('pending'::eval_run_status, 'running'::eval_run_status)
+                THEN 'cancelled'::eval_run_status
+                ELSE status
+            END,
+            updated_at = NOW()
+            WHERE id = $1
+            "#,
+        )
+        .bind(id)
+        .execute(&self.pool)
+        .await
+        .map_err(db_err)?;
+        Ok(result.rows_affected() > 0)
+    }
 }
 
 fn parse_status(s: &str) -> EvalRunStatus {
