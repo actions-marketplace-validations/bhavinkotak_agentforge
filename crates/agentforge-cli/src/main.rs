@@ -50,6 +50,50 @@ enum Commands {
         #[arg(long, default_value = "42")]
         seed: u64,
 
+        /// LLM provider for the agent under test: openai | anthropic | nvidia
+        #[arg(long, default_value = "openai")]
+        provider: String,
+
+        /// LLM provider for the judge (must differ from agent provider): openai | anthropic | nvidia
+        #[arg(long, default_value = "anthropic")]
+        judge_provider: String,
+
+        /// Minimum aggregate score to gate promotion (0.0–1.0)
+        #[arg(long, default_value = "0.85")]
+        threshold: f64,
+
+        /// Write full scorecard JSON to FILE (used by the GitHub Action)
+        #[arg(long)]
+        output_json: Option<PathBuf>,
+
+        /// Validate agent file and preview scenario count without executing any LLM calls
+        #[arg(long, default_value = "false")]
+        dry_run: bool,
+
+        /// Override weight for task-completion dimension (default: 0.35)
+        #[arg(long)]
+        weight_task: Option<f64>,
+
+        /// Override weight for tool-selection dimension (default: 0.20)
+        #[arg(long)]
+        weight_tool: Option<f64>,
+
+        /// Override weight for argument-correctness dimension (default: 0.20)
+        #[arg(long)]
+        weight_args: Option<f64>,
+
+        /// Override weight for schema-compliance dimension (default: 0.15)
+        #[arg(long)]
+        weight_schema: Option<f64>,
+
+        /// Override weight for instruction-adherence dimension (default: 0.07)
+        #[arg(long)]
+        weight_instr: Option<f64>,
+
+        /// Override weight for path-efficiency dimension (default: 0.03)
+        #[arg(long)]
+        weight_path: Option<f64>,
+
         /// Enable red-team adversarial probes in addition to standard scenarios
         #[arg(long, default_value = "false")]
         red_team: bool,
@@ -160,9 +204,41 @@ async fn run_command(command: Commands) -> Result<i32> {
             scenarios,
             concurrency,
             seed,
+            provider,
+            judge_provider,
+            threshold,
+            output_json,
+            dry_run,
+            weight_task,
+            weight_tool,
+            weight_args,
+            weight_schema,
+            weight_instr,
+            weight_path,
             red_team,
             cost_optimize,
-        } => cmd_run(agent, scenarios, concurrency, seed, red_team, cost_optimize).await,
+        } => {
+            cmd_run(
+                agent,
+                scenarios,
+                concurrency,
+                seed,
+                provider,
+                judge_provider,
+                threshold,
+                output_json,
+                dry_run,
+                weight_task,
+                weight_tool,
+                weight_args,
+                weight_schema,
+                weight_instr,
+                weight_path,
+                red_team,
+                cost_optimize,
+            )
+            .await
+        }
         Commands::Diff { v1, v2 } => cmd_diff(v1, v2).await,
         Commands::Promote { run_id } => cmd_promote(run_id).await,
         Commands::Scores { run } => cmd_scores(run).await,
@@ -184,11 +260,23 @@ async fn run_command(command: Commands) -> Result<i32> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn cmd_run(
     agent_path: PathBuf,
     scenario_count: u32,
     concurrency: u32,
     seed: u64,
+    provider: String,
+    judge_provider: String,
+    threshold: f64,
+    output_json: Option<PathBuf>,
+    dry_run: bool,
+    weight_task: Option<f64>,
+    weight_tool: Option<f64>,
+    weight_args: Option<f64>,
+    weight_schema: Option<f64>,
+    weight_instr: Option<f64>,
+    weight_path: Option<f64>,
     red_team: bool,
     cost_optimize: bool,
 ) -> Result<i32> {
@@ -225,6 +313,67 @@ async fn cmd_run(
         &sha[..12]
     );
 
+    // --dry-run: validate only, no LLM calls
+    if dry_run {
+        println!(
+            "\n--dry-run: validation passed. {} scenarios would be generated.",
+            scenario_count
+        );
+        println!("  Provider: {provider} | Judge: {judge_provider} | Threshold: {threshold:.2}");
+        return Ok(0);
+    }
+
+    // Build eval weights from CLI flags (fall back to env-var defaults)
+    let weights = agentforge_core::EvalWeights {
+        task_completion: weight_task.unwrap_or_else(|| {
+            std::env::var("AGENTFORGE_WEIGHT_TASK")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0.35)
+        }),
+        tool_selection: weight_tool.unwrap_or_else(|| {
+            std::env::var("AGENTFORGE_WEIGHT_TOOL")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0.20)
+        }),
+        argument_correctness: weight_args.unwrap_or_else(|| {
+            std::env::var("AGENTFORGE_WEIGHT_ARGS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0.20)
+        }),
+        schema_compliance: weight_schema.unwrap_or_else(|| {
+            std::env::var("AGENTFORGE_WEIGHT_SCHEMA")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0.15)
+        }),
+        instruction_adherence: weight_instr.unwrap_or_else(|| {
+            std::env::var("AGENTFORGE_WEIGHT_INSTR")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0.07)
+        }),
+        path_efficiency: weight_path.unwrap_or_else(|| {
+            std::env::var("AGENTFORGE_WEIGHT_PATH")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0.03)
+        }),
+    };
+    if !weights.validate() {
+        eprintln!(
+            "[WARN] Scoring weights do not sum to 1.0 ({:.3}). Results may be unexpected.",
+            weights.task_completion
+                + weights.tool_selection
+                + weights.argument_correctness
+                + weights.schema_compliance
+                + weights.instruction_adherence
+                + weights.path_efficiency
+        );
+    }
+
     // DB (optional — skip if no DATABASE_URL)
     let db_opt = if let Ok(url) = std::env::var("DATABASE_URL") {
         let pool = create_pool(&url).await.ok();
@@ -250,7 +399,7 @@ async fn cmd_run(
 
     // Generate scenarios
     println!("Generating {} scenarios...", scenario_count);
-    let scorer_config = build_scorer_config();
+    let scorer_config = build_scorer_config(&judge_provider, weights);
     let mut scenarios = generate_scenarios(
         &agent_file,
         &ScenarioGeneratorConfig {
@@ -287,7 +436,7 @@ async fn cmd_run(
     println!("Generated {} scenarios total.", scenarios.len());
 
     // Build LLM client
-    let llm_client = build_llm_client()?;
+    let llm_client = build_llm_client(&provider)?;
 
     // Run agent
     println!(
@@ -325,6 +474,35 @@ async fn cmd_run(
 
     // Print results
     print_scorecard(&scorecard);
+
+    // Write scorecard JSON if --output-json was specified (used by the GitHub Action)
+    if let Some(ref json_path) = output_json {
+        let pass_threshold_used = agent_file
+            .eval_hints
+            .as_ref()
+            .and_then(|h| h.pass_threshold)
+            .unwrap_or(threshold);
+        let promoted = scorecard.aggregate_score >= pass_threshold_used;
+        let json = serde_json::json!({
+            "run_id": run_id,
+            "agent_name": scorecard.agent_name,
+            "agent_version": scorecard.agent_version,
+            "pass_rate": scorecard.pass_rate,
+            "aggregate_score": scorecard.aggregate_score,
+            "promoted": promoted,
+            "dimension_scores": {
+                "task_completion": scorecard.dimension_scores.task_completion,
+                "tool_selection": scorecard.dimension_scores.tool_selection,
+                "argument_correctness": scorecard.dimension_scores.argument_correctness,
+                "schema_compliance": scorecard.dimension_scores.schema_compliance,
+                "instruction_adherence": scorecard.dimension_scores.instruction_adherence,
+                "path_efficiency": scorecard.dimension_scores.path_efficiency,
+            },
+        });
+        std::fs::write(json_path, serde_json::to_string_pretty(&json)?)
+            .with_context(|| format!("Failed to write scorecard to {}", json_path.display()))?;
+        println!("Scorecard written to {}", json_path.display());
+    }
 
     // v2: Cost optimizer analysis
     if cost_optimize {
@@ -397,7 +575,7 @@ async fn cmd_run(
         .eval_hints
         .as_ref()
         .and_then(|h| h.pass_threshold)
-        .unwrap_or(0.85);
+        .unwrap_or(threshold);
 
     if scorecard.aggregate_score >= pass_threshold {
         Ok(0)
@@ -613,21 +791,39 @@ fn print_scorecard(sc: &agentforge_core::Scorecard) {
     println!("╚══════════════════════════════════════╝");
 }
 
-fn build_scorer_config() -> ScorerConfig {
+fn build_scorer_config(
+    judge_provider: &str,
+    weights: agentforge_core::EvalWeights,
+) -> ScorerConfig {
+    let (default_base_url, default_api_key, default_model) = match judge_provider {
+        "anthropic" => (
+            "https://api.anthropic.com/v1",
+            std::env::var("ANTHROPIC_API_KEY").unwrap_or_default(),
+            "claude-3-5-sonnet-20241022".to_string(),
+        ),
+        "nvidia" => (
+            "https://integrate.api.nvidia.com/v1",
+            std::env::var("NVIDIA_API_KEY").unwrap_or_default(),
+            "meta/llama-3.1-70b-instruct".to_string(),
+        ),
+        _ => (
+            "https://api.openai.com/v1",
+            std::env::var("OPENAI_API_KEY").unwrap_or_default(),
+            "gpt-4o".to_string(),
+        ),
+    };
     ScorerConfig {
-        judge_model: std::env::var("AGENTFORGE_JUDGE_MODEL")
-            .unwrap_or_else(|_| "gpt-4o".to_string()),
+        judge_model: std::env::var("AGENTFORGE_JUDGE_MODEL").unwrap_or(default_model),
         judge_base_url: std::env::var("AGENTFORGE_JUDGE_BASE_URL")
-            .unwrap_or_else(|_| "https://api.openai.com/v1".to_string()),
-        judge_api_key: std::env::var("OPENAI_API_KEY").unwrap_or_default(),
+            .unwrap_or_else(|_| default_base_url.to_string()),
+        judge_api_key: default_api_key,
+        weights,
         ..Default::default()
     }
 }
 
-fn build_llm_client() -> Result<std::sync::Arc<dyn agentforge_runner::LlmClient>> {
-    let provider =
-        std::env::var("AGENTFORGE_JUDGE_PROVIDER").unwrap_or_else(|_| "openai".to_string());
-    match provider.as_str() {
+fn build_llm_client(provider: &str) -> Result<std::sync::Arc<dyn agentforge_runner::LlmClient>> {
+    match provider {
         "anthropic" => Ok(std::sync::Arc::new(
             AnthropicClient::from_env()
                 .ok_or_else(|| anyhow::anyhow!("ANTHROPIC_API_KEY must be set"))?,
@@ -784,7 +980,9 @@ async fn cmd_benchmark(agent_path: PathBuf, suite_str: String, tasks_path: PathB
         tasks_path.display()
     );
 
-    let llm = build_llm_client()?;
+    let llm = build_llm_client(
+        &std::env::var("AGENTFORGE_JUDGE_PROVIDER").unwrap_or_else(|_| "openai".to_string()),
+    )?;
     let agent_id = Uuid::new_v5(&Uuid::NAMESPACE_DNS, agent_file.name.as_bytes());
 
     let runner = BenchmarkRunner::new(

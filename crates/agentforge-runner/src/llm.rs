@@ -222,7 +222,11 @@ fn parse_openai_response(raw: serde_json::Value, latency_ms: u64) -> Result<LlmR
     let content = msg_val["content"].as_str().map(String::from);
 
     // Debug-log the raw tool_calls array so we can diagnose format issues.
-    if msg_val.get("tool_calls").and_then(|v| v.as_array()).is_some_and(|a| !a.is_empty()) {
+    if msg_val
+        .get("tool_calls")
+        .and_then(|v| v.as_array())
+        .is_some_and(|a| !a.is_empty())
+    {
         tracing::debug!(
             raw_tool_calls = %msg_val["tool_calls"],
             "Raw tool_calls from API"

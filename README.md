@@ -2,6 +2,11 @@
 
 > **One file in. A better agent out.**
 
+[![CI](https://github.com/bhavinkotak/agentforge/actions/workflows/ci.yml/badge.svg)](https://github.com/bhavinkotak/agentforge/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/bhavinkotak/agentforge?sort=semver)](https://github.com/bhavinkotak/agentforge/releases)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![GitHub Marketplace](https://img.shields.io/badge/GitHub%20Actions-Marketplace-blue?logo=github)](https://github.com/marketplace/actions/agentforge-eval)
+
 AgentForge is a self-improving AI agent optimization platform written in Rust. Feed it a single agent file — a declarative spec describing your AI agent's system prompt, tools, output schemas, and behavioral constraints — and it autonomously generates test scenarios, runs the agent, scores every execution trace, and iterates on the specification until it converges on a measurably better version.
 
 ---
@@ -147,14 +152,14 @@ agentforge/
 
 ### Prerequisites
 
-- Rust 1.78+ (install via [rustup](https://rustup.rs))
+- Rust 1.83+ (install via [rustup](https://rustup.rs))
 - Docker + Docker Compose
-- OpenAI or Anthropic API key
+- OpenAI, Anthropic, or NVIDIA NIM API key
 
 ### 1. Clone and start infrastructure
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/agentforge.git
+git clone https://github.com/bhavinkotak/agentforge.git
 cd agentforge
 
 # Start PostgreSQL and Redis
@@ -316,13 +321,23 @@ Commands:
   help     Print help
 
 Options for `run`:
-  --agent <FILE>         Path to agent YAML/JSON file (required)
-  --scenarios <N>        Number of scenarios to generate (default: 100)
-  --concurrency <N>      Parallel workers (default: 10)
-  --seed <N>             Random seed for reproducibility (default: 42)
-  --provider <NAME>      LLM provider: openai | anthropic (default: openai)
-  --judge-provider <N>   Judge LLM provider (must differ from agent provider)
-  --threshold <F>        Pass threshold 0.0–1.0 (default: 0.85)
+  --agent <FILE>               Path to agent YAML/JSON file (required)
+  --scenarios <N>              Number of scenarios to generate (default: 100)
+  --concurrency <N>            Parallel workers (default: 10)
+  --seed <N>                   Random seed for reproducibility (default: 42)
+  --provider <NAME>            Agent LLM provider: openai | anthropic | nvidia (default: openai)
+  --judge-provider <NAME>      Judge LLM provider (must differ from --provider; default: anthropic)
+  --threshold <F>              Pass threshold 0.0–1.0 (default: 0.85)
+  --output-json <FILE>         Write full scorecard JSON to FILE (used by the GitHub Action)
+  --dry-run                    Validate agent file and preview scenario count; no LLM calls made
+  --weight-task <F>            Override task-completion weight (default: 0.35)
+  --weight-tool <F>            Override tool-selection weight (default: 0.20)
+  --weight-args <F>            Override argument-correctness weight (default: 0.20)
+  --weight-schema <F>          Override schema-compliance weight (default: 0.15)
+  --weight-instr <F>           Override instruction-adherence weight (default: 0.07)
+  --weight-path <F>            Override path-efficiency weight (default: 0.03)
+  --red-team                   Append adversarial red-team probes to standard scenarios
+  --cost-optimize              After eval, recommend cheaper model alternatives
 
 Exit codes:
   0  — All gates passed, version promoted (or no promotion needed)
@@ -336,10 +351,13 @@ Exit codes:
 
 The API server runs on `http://0.0.0.0:8080` by default.
 
+An **OpenAPI 3.1 spec** is available at [docs/openapi.yaml](docs/openapi.yaml) and can be loaded into Swagger UI, Postman, or any OpenAPI-compatible tool.
+
 ### Endpoints
 
 | Method | Path | Description |
 |--------|------|-------------|
+| `GET` | `/api/v1/agents` | List all registered agent versions (paginated: `?limit=50&offset=0`) |
 | `POST` | `/api/v1/agents` | Upload and register a new agent version |
 | `GET` | `/api/v1/agents/:id` | Get agent version by ID |
 | `POST` | `/api/v1/runs` | Start a new eval run |
@@ -386,7 +404,7 @@ Every execution trace is scored across six dimensions:
 | Instruction adherence | 7% | LLM judge with rubric | Did the agent follow all behavioral constraints? |
 | Path efficiency | 3% | Step count vs. optimal | Was the shortest valid path taken? |
 
-Weights are configurable via environment variables. The judge LLM **must be different from the agent model** to prevent circular bias — this is enforced at runtime.
+Weights are configurable via environment variables (`AGENTFORGE_WEIGHT_TASK`, `AGENTFORGE_WEIGHT_TOOL`, `AGENTFORGE_WEIGHT_ARGS`, `AGENTFORGE_WEIGHT_SCHEMA`, `AGENTFORGE_WEIGHT_INSTR`, `AGENTFORGE_WEIGHT_PATH`) or via per-run CLI flags (`--weight-task`, `--weight-tool`, etc.). The judge LLM **must be different from the agent model** to prevent circular bias — this is enforced at runtime.
 
 ### Failure Clusters
 
@@ -412,6 +430,8 @@ A candidate variant must clear **all three gates** to be promoted:
 3. **Stability Gate** — Must be evaluated on at least 3 independent random seeds before comparison, to account for LLM non-determinism (configurable via `AGENTFORGE_STABILITY_SEEDS`).
 
 If multiple candidates pass all gates, the one with the highest aggregate score is promoted. Promotion creates a new versioned agent file with an auto-generated changelog entry.
+
+> **First run (no champion):** When no champion exists yet, all three gates are automatically **waived** and the candidate is promoted unconditionally. This bootstraps the system on the first evaluation.
 
 ---
 
@@ -496,8 +516,9 @@ AgentForge is published as a reusable GitHub Action. No Rust toolchain, database
 | `concurrency` | no | `10` | Parallel workers for running scenarios |
 | `seed` | no | `42` | Random seed for reproducible scenario generation |
 | `threshold` | no | `0.85` | Minimum aggregate score to gate promotion (0.0–1.0) |
-| `provider` | no | `openai` | LLM provider for the agent under test: `openai` \| `anthropic` |
-| `judge_provider` | no | `anthropic` | Judge LLM provider (must differ from `provider`) |
+| `provider` | no | `openai` | LLM provider for the agent under test: `openai` \| `anthropic` \| `nvidia` |
+| `judge_provider` | no | `anthropic` | Judge LLM provider (must differ from `provider`): `openai` \| `anthropic` \| `nvidia` |
+| `version` | no | _(action ref)_ | Specific AgentForge release to use (e.g. `v1.2.3`). Defaults to the version of this action. |
 
 ### Outputs
 

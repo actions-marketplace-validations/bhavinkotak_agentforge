@@ -27,13 +27,22 @@ inputs:
     required: false
     default: '0.85'
   provider:
-    description: 'LLM provider for the agent under test: openai | anthropic | nvidia'
+    description: |
+      LLM provider for the agent under test: openai | anthropic | nvidia.
+      Note: ollama and bedrock providers require a self-hosted runner with local
+      access and are not supported in GitHub-hosted runners via this action.
     required: false
     default: 'openai'
   judge_provider:
-    description: 'LLM provider for the judge (must differ from agent provider): openai | anthropic | nvidia'
+    description: |
+      LLM provider for the judge (must differ from agent provider): openai | anthropic | nvidia.
+      Note: ollama and bedrock are not supported in GitHub-hosted runners via this action.
     required: false
     default: 'anthropic'
+  version:
+    description: 'AgentForge release version to use (e.g. v1.2.3). Defaults to the version of this action.'
+    required: false
+    default: ''
 
 outputs:
   pass_rate:
@@ -59,14 +68,33 @@ runs:
       id: setup
       shell: bash
       run: |
-        # Download pre-built binary from the release matching this action's ref
         REPO="bhavinkotak/agentforge"
-        VERSION="${{ github.action_ref }}"
-        # Strip leading 'v' if present for asset names
-        VERSION_NUM="${VERSION#v}"
+
+        # Prefer an explicit version input; fall back to the action ref.
+        # github.action_ref may be a branch/tag alias (e.g. "v1"), not a
+        # semver release tag.  When it is not a semver we query the GitHub
+        # API to resolve the latest matching release so the asset name is
+        # always correct.
+        REQUESTED_VERSION="${{ inputs.version }}"
+        if [ -z "$REQUESTED_VERSION" ]; then
+          REQUESTED_VERSION="${{ github.action_ref }}"
+        fi
+
+        # If the requested version looks like a semver tag, use it directly.
+        # Otherwise (e.g. "v1", "main") resolve to the latest release.
+        if echo "$REQUESTED_VERSION" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]'; then
+          VERSION="$REQUESTED_VERSION"
+        else
+          echo "Resolving latest release for ref '${REQUESTED_VERSION}'…"
+          VERSION=$(curl -fsSL \
+            "https://api.github.com/repos/${REPO}/releases/latest" \
+            | grep '"tag_name"' \
+            | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/')
+          echo "Resolved to ${VERSION}"
+        fi
+
         OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
         ARCH="$(uname -m)"
-        # Normalise arch
         case "$ARCH" in
           x86_64) ARCH="x86_64" ;;
           aarch64|arm64) ARCH="aarch64" ;;
@@ -129,3 +157,34 @@ runs:
           echo "Scorecard saved to .agentforge/scorecard.json"
           cat /tmp/agentforge-scorecard.json
         fi
+
+    - name: Post scorecard summary as PR comment
+      if: github.event_name == 'pull_request' && always()
+      shell: bash
+      env:
+        GH_TOKEN: ${{ env.GITHUB_TOKEN }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+        REPO: ${{ github.repository }}
+      run: |
+        if [ -z "$GH_TOKEN" ] || [ ! -f /tmp/agentforge-scorecard.json ]; then
+          echo "Skipping PR comment (no GITHUB_TOKEN or no scorecard)"
+          exit 0
+        fi
+        PASS_RATE=$(jq -r '.pass_rate // "0"' /tmp/agentforge-scorecard.json)
+        AGG=$(jq -r '.aggregate_score // "0"' /tmp/agentforge-scorecard.json)
+        PROMOTED=$(jq -r '.promoted // "false"' /tmp/agentforge-scorecard.json)
+        RUN_ID=$(jq -r '.run_id // ""' /tmp/agentforge-scorecard.json)
+        STATUS_ICON=$([ "$PROMOTED" = "true" ] && echo "✅" || echo "❌")
+        BODY="## AgentForge Scorecard ${STATUS_ICON}\n\n"
+        BODY+="| Metric | Value |\n|--------|-------|\n"
+        BODY+="| Aggregate Score | ${AGG} |\n"
+        BODY+="| Pass Rate | ${PASS_RATE} |\n"
+        BODY+="| Promoted | ${PROMOTED} |\n"
+        BODY+="| Run ID | \`${RUN_ID}\` |\n"
+        curl -fsSL -X POST \
+          -H "Authorization: Bearer $GH_TOKEN" \
+          -H "Content-Type: application/json" \
+          -d "{\"body\": $(printf '%s' "$BODY" | jq -Rs .)}" \
+          "https://api.github.com/repos/${REPO}/issues/${PR_NUMBER}/comments" \
+          > /dev/null
+        echo "PR comment posted."

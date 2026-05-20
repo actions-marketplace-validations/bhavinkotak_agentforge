@@ -15,12 +15,14 @@ RUN SQLX_OFFLINE=true cargo build --release --package agentforge-api --package a
 # ─── API server runtime ────────────────────────────────────────────────────────
 FROM alpine:3.21 AS api
 
-RUN apk add --no-cache ca-certificates
+RUN apk add --no-cache ca-certificates curl
 
 WORKDIR /app
 COPY --from=builder /app/target/release/agentforge-api .
 
 EXPOSE 8080
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD curl -f http://localhost:8080/health || exit 1
 CMD ["./agentforge-api"]
 
 # ─── CLI runtime (used by GitHub Action and direct usage) ─────────────────────
