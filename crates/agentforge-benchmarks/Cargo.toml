@@ -1,7 +1,7 @@
 [package]
 name = "agentforge-benchmarks"
 description = "Benchmark comparison: runs agents against GAIA, AgentBench, and WebArena tasks and reports percentile vs. published baselines (v2 F-05)"
-version = "0.1.5"
+version = "0.1.6"
 edition.workspace = true
 
 [dependencies]

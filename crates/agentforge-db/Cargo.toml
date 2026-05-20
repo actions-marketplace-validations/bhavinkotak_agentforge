@@ -1,7 +1,7 @@
 [package]
 name = "agentforge-db"
 description = "Database layer: SQLx queries and migrations for AgentForge"
-version = "0.1.5"
+version = "0.1.6"
 edition.workspace = true
 
 [dependencies]

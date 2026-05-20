@@ -1,7 +1,7 @@
 [package]
 name = "agentforge-online-eval"
 description = "Online shadow evaluation: routes live traffic to champion and candidate simultaneously and compares results (v2 F-01)"
-version = "0.1.5"
+version = "0.1.6"
 edition.workspace = true
 
 [dependencies]

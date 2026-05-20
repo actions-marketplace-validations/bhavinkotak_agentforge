@@ -1,7 +1,7 @@
 [package]
 name = "agentforge-multiagent"
 description = "Multi-agent graph testing: runs agent teams (CrewAI-style, LangGraph-style) as composed units with per-node scoring (v2 F-03)"
-version = "0.1.5"
+version = "0.1.6"
 edition.workspace = true
 
 [dependencies]

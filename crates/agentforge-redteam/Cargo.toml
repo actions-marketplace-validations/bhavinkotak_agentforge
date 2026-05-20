@@ -1,7 +1,7 @@
 [package]
 name = "agentforge-redteam"
 description = "Red-teaming mode: adversarial safety probing with jailbreak, prompt injection, data leakage, and constraint bypass scenarios (v2 F-04)"
-version = "0.1.5"
+version = "0.1.6"
 edition.workspace = true
 
 [dependencies]
