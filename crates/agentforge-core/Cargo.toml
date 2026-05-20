@@ -1,7 +1,7 @@
 [package]
 name = "agentforge-core"
 description = "Shared types, data models, and error types for AgentForge"
-version = "0.1.5"
+version = "0.1.6"
 edition.workspace = true
 
 [dependencies]

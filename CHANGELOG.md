@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.1.6](https://github.com/bhavinkotak/agentforge/compare/agentforge-v0.1.5...agentforge-v0.1.6) (2026-05-20)
+
+
+### Features
+
+* add NVIDIA NIM provider + permissions blocks in all workflows ([13b47e4](https://github.com/bhavinkotak/agentforge/commit/13b47e41bfde73c7322f424d6933c53e8b734c57))
+
+
+### Bug Fixes
+
+* address 4 remaining audit issues ([#11](https://github.com/bhavinkotak/agentforge/issues/11) DELETE endpoints, [#13](https://github.com/bhavinkotak/agentforge/issues/13) --max-cost, [#16](https://github.com/bhavinkotak/agentforge/issues/16) rate limiting, tests) ([497e65a](https://github.com/bhavinkotak/agentforge/commit/497e65acd04de42cc94ee57b28c7f49023126580))
+* address all 22 audit issues ([2b12820](https://github.com/bhavinkotak/agentforge/commit/2b12820550697e272e679376f36dd0b6eef6448a))
+* CI clippy + address Dependabot Cargo PRs ([87b85f9](https://github.com/bhavinkotak/agentforge/commit/87b85f9f0475868b84ccc094cee679f6555dd0a4))
+* **ci:** capture binary exit code with || EVAL_EXIT=$? to bypass bash errexit ([689142e](https://github.com/bhavinkotak/agentforge/commit/689142ee3b96531a8e61dd41dbbb728c82411cf0))
+* **ci:** fix agent-test-nvidia.yml — secrets context not available in job if condition ([cd5be8f](https://github.com/bhavinkotak/agentforge/commit/cd5be8f1d6cf230da7250605d5458743a6ff824d))
+* **nvidia:** switch to 70b model + accept exit-code 1 as connectivity-confirmed in CI ([c0456b1](https://github.com/bhavinkotak/agentforge/commit/c0456b115655d65427f6e7dfb680f2c5dfdf8125))
+* **nvidia:** switch to mistralai/mistral-small-4-119b-2603 (llama-3.1-70b removed from NIM) ([55492cc](https://github.com/bhavinkotak/agentforge/commit/55492cc005271397fb05cc3b78a4bb04249549e7))
+* pass --provider/--judge-provider nvidia flags in agent-test workflow ([c521546](https://github.com/bhavinkotak/agentforge/commit/c521546326f5ea38bc6a90e704e05f96ea8f04de))
+* **runner:** fix multi-turn tool calls for vLLM backends (NVIDIA NIM Mistral) ([5b3fbf2](https://github.com/bhavinkotak/agentforge/commit/5b3fbf21e7bcb79a596189e1dea3eea547ff03b4))
+* **runner:** NvidiaClient overrides request model with configured NVIDIA model ([d8a9500](https://github.com/bhavinkotak/agentforge/commit/d8a9500c930c58144217f05701d5b912796e2645))
+* **runner:** rename ToolCall tool_type -&gt; type in serde (fix multi-turn tool call failure); add AGENTFORGE_DEBUG workflow mode ([4c22c7e](https://github.com/bhavinkotak/agentforge/commit/4c22c7e946319642457d79cbc3b0a3c714ac9020))
+* **runner:** robust tool-call parsing and empty-list guard for vLLM backends ([9d2f29f](https://github.com/bhavinkotak/agentforge/commit/9d2f29f485e925ed4122c94c438d9d4a3314a4a0))
+* third round of audit issues — API list endpoints, CLI --agent-format, pagination, doc gaps ([938fe74](https://github.com/bhavinkotak/agentforge/commit/938fe748bde57f78fbd17d4260c0c192244e8e85))
+
 ## [0.1.5](https://github.com/bhavinkotak/agentforge/compare/agentforge-v0.1.4...agentforge-v0.1.5) (2026-05-01)
 
 
