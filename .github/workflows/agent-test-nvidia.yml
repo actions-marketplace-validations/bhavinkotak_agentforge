@@ -54,16 +54,15 @@ jobs:
         env:
           NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
           # Use a free NVIDIA NIM model for both agent and judge.
-          # Override via AGENTFORGE_NVIDIA_MODEL env if needed.
+          # Override via AGENTFORGE_JUDGE_MODEL env if needed.
           # Current free models with tool-calling support (build.nvidia.com/models):
           #   mistralai/mistral-small-4-119b-2603  — default (free, fast, strong tool calling)
           #   z-ai/glm-5.1                         — agentic AI, free
           #   deepseek-ai/deepseek-v3-0324         — explicit tool calling tag, free
           #   mistralai/mistral-large-3-675b-instruct-2512 — large, agentic, free
-          AGENTFORGE_JUDGE_PROVIDER: nvidia
           # mistral-small-4 is free, has strong tool-calling support, and is fast.
-          # Override via AGENTFORGE_NVIDIA_MODEL to try other free models.
-          AGENTFORGE_NVIDIA_MODEL: mistralai/mistral-small-4-119b-2603
+          # Override via AGENTFORGE_JUDGE_MODEL to try other free models.
+          AGENTFORGE_JUDGE_MODEL: mistralai/mistral-small-4-119b-2603
           # Set repo variable AGENTFORGE_DEBUG=true (Settings → Variables → Actions)
           # to enable verbose trace-level logging.
           RUST_LOG: ${{ vars.AGENTFORGE_DEBUG == 'true' && 'agentforge=debug,agentforge_runner=debug,agentforge_scenarios=debug,agentforge_scorer=debug' || 'warn' }}
@@ -85,7 +84,9 @@ jobs:
             --agent fixtures/customer-support-agent.yaml \
             --scenarios 5 \
             --concurrency 2 \
-            --seed 42 || EVAL_EXIT=$?
+            --seed 42 \
+            --provider nvidia \
+            --judge-provider nvidia || EVAL_EXIT=$?
           if [ "$EVAL_EXIT" -eq 0 ]; then
             echo "All scenarios passed the evaluation threshold."
           elif [ "$EVAL_EXIT" -eq 1 ]; then
