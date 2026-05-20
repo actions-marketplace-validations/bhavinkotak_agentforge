@@ -28,6 +28,12 @@ pub struct StartRunRequest {
     pub scenario_count: Option<u32>,
     pub seed: Option<i64>,
     pub concurrency: Option<u32>,
+    /// Pass threshold 0.0–1.0 (default: `AGENTFORGE_DEFAULT_PASS_THRESHOLD` / 0.85).
+    pub threshold: Option<f64>,
+    /// LLM provider for the agent under test (`openai` | `anthropic` | `nvidia` | `ollama` | `bedrock`).
+    pub provider: Option<String>,
+    /// LLM provider for the judge (must differ from `provider` at the provider level).
+    pub judge_provider: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -116,6 +122,37 @@ pub async fn start_run(
                 .and_then(|h| h.scenario_count)
         })
         .unwrap_or(100);
+
+    // Guard: reject scenario counts exceeding the configured maximum
+    if scenario_count > state.max_scenarios {
+        state.active_runs.fetch_sub(1, Ordering::SeqCst);
+        return Err(ApiError::bad_request(format!(
+            "scenario_count {scenario_count} exceeds the maximum allowed ({max}). \
+             Increase AGENTFORGE_MAX_SCENARIOS to raise the limit.",
+            max = state.max_scenarios,
+        )));
+    }
+
+    // Guard: reject same-provider runs to prevent circular bias in scoring
+    if let (Some(ref provider), Some(ref judge_provider)) = (&req.provider, &req.judge_provider) {
+        if provider == judge_provider {
+            state.active_runs.fetch_sub(1, Ordering::SeqCst);
+            return Err(ApiError::bad_request(
+                "provider and judge_provider must be different to prevent circular scoring bias",
+            ));
+        }
+    }
+
+    // Guard: threshold must be a valid 0.0–1.0 probability if supplied
+    if let Some(threshold) = req.threshold {
+        if !(0.0_f64..=1.0_f64).contains(&threshold) {
+            state.active_runs.fetch_sub(1, Ordering::SeqCst);
+            return Err(ApiError::bad_request(
+                "threshold must be between 0.0 and 1.0",
+            ));
+        }
+    }
+
     let concurrency = req.concurrency.unwrap_or(10);
     let seed = req.seed.unwrap_or(42);
 

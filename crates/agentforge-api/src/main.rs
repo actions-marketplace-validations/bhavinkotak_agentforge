@@ -60,6 +60,18 @@ async fn main() -> anyhow::Result<()> {
         .and_then(|v| v.parse().ok())
         .unwrap_or(10);
 
+    let max_scenarios: u32 = std::env::var("AGENTFORGE_MAX_SCENARIOS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(2000);
+
+    let api_key: Option<String> = std::env::var("AGENTFORGE_API_KEY").ok();
+    if api_key.is_some() {
+        tracing::info!("API key authentication enabled");
+    } else {
+        tracing::warn!("AGENTFORGE_API_KEY is not set — running in unauthenticated mode");
+    }
+
     let state = Arc::new(AppState {
         db,
         llm_client,
@@ -68,6 +80,8 @@ async fn main() -> anyhow::Result<()> {
         trace_exporter,
         active_runs: Arc::new(std::sync::atomic::AtomicI64::new(0)),
         max_concurrent_runs,
+        max_scenarios,
+        api_key,
     });
 
     let host = std::env::var("AGENTFORGE_HOST").unwrap_or_else(|_| "0.0.0.0".to_string());

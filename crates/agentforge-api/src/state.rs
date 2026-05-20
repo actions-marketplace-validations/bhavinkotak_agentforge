@@ -18,4 +18,10 @@ pub struct AppState {
     pub active_runs: Arc<AtomicI64>,
     /// Maximum number of concurrently active evaluation runs.
     pub max_concurrent_runs: i64,
+    /// Maximum number of scenarios allowed per eval run (`AGENTFORGE_MAX_SCENARIOS`, default 2000).
+    pub max_scenarios: u32,
+    /// Optional Bearer token for API authentication (`AGENTFORGE_API_KEY`).
+    /// When set, all `/api/v1/*` endpoints require `Authorization: Bearer <key>`.
+    /// When `None`, the server operates in unauthenticated development mode.
+    pub api_key: Option<String>,
 }

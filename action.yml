@@ -28,15 +28,17 @@ inputs:
     default: '0.85'
   provider:
     description: |
-      LLM provider for the agent under test: openai | anthropic | nvidia.
-      Note: ollama and bedrock providers require a self-hosted runner with local
-      access and are not supported in GitHub-hosted runners via this action.
+      LLM provider for the agent under test: openai | anthropic | nvidia | ollama | bedrock.
+      Note: ollama and bedrock require a self-hosted runner with local infrastructure
+      (e.g. a running Ollama server or AWS Bedrock access) and are not available on
+      GitHub-hosted runners without additional setup.
     required: false
     default: 'openai'
   judge_provider:
     description: |
-      LLM provider for the judge (must differ from agent provider): openai | anthropic | nvidia.
-      Note: ollama and bedrock are not supported in GitHub-hosted runners via this action.
+      LLM provider for the judge (must differ from agent provider at the provider level):
+      openai | anthropic | nvidia | ollama | bedrock.
+      Note: ollama and bedrock are not supported on GitHub-hosted runners without extra setup.
     required: false
     default: 'anthropic'
   version:

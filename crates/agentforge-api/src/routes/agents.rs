@@ -7,8 +7,8 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use uuid::Uuid;
 
-use agentforge_core::AgentVersion;
-use agentforge_db::agent_repo::AgentRepo;
+use agentforge_core::{AgentVersion, Scenario};
+use agentforge_db::{agent_repo::AgentRepo, scenario_repo::ScenarioRepo};
 use agentforge_parser::parse_agent_file;
 
 use crate::{
@@ -158,4 +158,88 @@ pub async fn delete_agent(
     } else {
         Err(ApiError::not_found(format!("Agent {id} not found")))
     }
+}
+
+// ─── PATCH /agents/:id ──────────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+pub struct PatchAgentRequest {
+    /// When `true`, designates this version as the current champion.
+    /// All other versions of the same agent name are demoted automatically.
+    pub is_champion: Option<bool>,
+    /// Update the human-readable changelog entry for this version.
+    pub changelog: Option<String>,
+}
+
+/// PATCH /agents/:id — update mutable metadata for an agent version.
+///
+/// Supported mutations:
+/// - `is_champion: true` — crown this version as the champion without running the full gatekeeper
+///   pipeline (useful for bootstrapping or manual overrides).
+/// - `changelog` — update the changelog text recorded against this version.
+pub async fn patch_agent(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<Uuid>,
+    Json(req): Json<PatchAgentRequest>,
+) -> ApiResult<Json<AgentResponse>> {
+    let repo = AgentRepo::new(state.db.clone());
+
+    let agent = repo.find_by_id(id).await.map_err(|e| match e {
+        agentforge_core::AgentForgeError::NotFound { .. } => {
+            ApiError::not_found(format!("Agent {id} not found"))
+        }
+        other => ApiError::internal(other.to_string()),
+    })?;
+
+    if req.is_champion == Some(true) {
+        repo.set_champion(id, &agent.name)
+            .await
+            .map_err(|e| ApiError::internal(e.to_string()))?;
+    }
+
+    if let Some(ref changelog) = req.changelog {
+        repo.update_changelog(id, changelog)
+            .await
+            .map_err(|e| ApiError::internal(e.to_string()))?;
+    }
+
+    // Return the updated record
+    let updated = repo
+        .find_by_id(id)
+        .await
+        .map_err(|e| ApiError::internal(e.to_string()))?;
+    Ok(Json(updated.into()))
+}
+
+// ─── GET /agents/:id/scenarios ──────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+pub struct ListScenariosQuery {
+    pub limit: Option<i64>,
+}
+
+/// GET /agents/:id/scenarios — list generated test scenarios for an agent version.
+///
+/// Returns up to `limit` scenarios (default 50, max 500).
+pub async fn list_agent_scenarios(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<Uuid>,
+    Query(params): Query<ListScenariosQuery>,
+) -> ApiResult<Json<Vec<Scenario>>> {
+    // Verify the agent exists first so we return 404 rather than an empty list
+    let agent_repo = AgentRepo::new(state.db.clone());
+    agent_repo.find_by_id(id).await.map_err(|e| match e {
+        agentforge_core::AgentForgeError::NotFound { .. } => {
+            ApiError::not_found(format!("Agent {id} not found"))
+        }
+        other => ApiError::internal(other.to_string()),
+    })?;
+
+    let scenario_repo = ScenarioRepo::new(state.db.clone());
+    let limit = params.limit.unwrap_or(50).min(500);
+    let scenarios = scenario_repo
+        .list_by_agent(id, limit)
+        .await
+        .map_err(|e| ApiError::internal(e.to_string()))?;
+    Ok(Json(scenarios))
 }

@@ -155,6 +155,7 @@ agentforge/
 - Rust 1.83+ (install via [rustup](https://rustup.rs))
 - Docker + Docker Compose
 - OpenAI, Anthropic, or NVIDIA NIM API key
+- Node.js 20+ and npm (only required if developing the `web/` dashboard locally; production deployment uses the pre-built Docker image)
 
 ### 1. Clone and start infrastructure
 
@@ -197,8 +198,8 @@ DATABASE_URL=$DATABASE_URL ./target/release/agentforge-api
 # Show a scorecard diff between two versions
 ./target/release/agentforge diff <version-id-1> <version-id-2>
 
-# Promote the winning version
-./target/release/agentforge promote <version-id>
+# Promote the winning version (pass the run-id returned by `agentforge run`)
+./target/release/agentforge promote <run-id>
 ```
 
 ---
@@ -327,7 +328,8 @@ Options for `run`:
   --scenarios <N>              Number of scenarios to generate (default: 100)
   --concurrency <N>            Parallel workers (default: 10)
   --seed <N>                   Random seed for reproducibility (default: 42)
-  --provider <NAME>            Agent LLM provider: openai | anthropic | nvidia (default: openai)
+  --provider <NAME>            Agent LLM provider: openai | anthropic | nvidia | ollama | bedrock (default: openai)
+                               (ollama and bedrock require a self-hosted runner with local infrastructure)
   --judge-provider <NAME>      Judge LLM provider (must differ from --provider; default: anthropic)
   --threshold <F>              Pass threshold 0.0–1.0 (default: 0.85)
   --output-json <FILE>         Write full scorecard JSON to FILE (used by the GitHub Action)
@@ -364,41 +366,56 @@ An **OpenAPI 3.1 spec** is available at [docs/openapi.yaml](docs/openapi.yaml) a
 | `GET` | `/api/v1/agents` | List all registered agent versions (paginated: `?limit=50&offset=0`) |
 | `POST` | `/api/v1/agents` | Upload and register a new agent version |
 | `GET` | `/api/v1/agents/:id` | Get agent version by ID |
+| `PATCH` | `/api/v1/agents/:id` | Update agent metadata (`is_champion`, `changelog`) |
 | `DELETE` | `/api/v1/agents/:id` | Delete an agent version (blocked if it is the current champion) |
+| `GET` | `/api/v1/agents/:id/scenarios` | List generated test scenarios for an agent version (paginated: `?limit=50`, max 500) |
 | `GET` | `/api/v1/runs` | List all eval runs (paginated: `?limit=50&offset=0`) |
 | `POST` | `/api/v1/runs` | Start a new eval run (rate-limited by `AGENTFORGE_MAX_CONCURRENT_RUNS`) |
 | `GET` | `/api/v1/runs/:id` | Get run status and results |
 | `DELETE` | `/api/v1/runs/:id` | Cancel a pending/running eval run (sets status → `cancelled`) |
+| `GET` | `/api/v1/runs/:id/scorecard` | Full scorecard with per-dimension scores and failure clusters |
 | `GET` | `/api/v1/runs/:id/traces` | List traces for a run (paginated: `?limit=100&offset=0`, max 500) |
-| `GET` | `/api/v1/agents/:id1/diff/:id2` | Scorecard diff between two versions |
-| `POST` | `/api/v1/agents/:id/promote` | Promote version to champion |
-| `GET` | `/health` | Health check |
+| `GET` | `/api/v1/diff` | Scorecard diff between two versions (`?v1=<uuid>&v2=<uuid>`) |
+| `POST` | `/api/v1/promote/:run_id` | Promote version to champion (runs all three gatekeeper gates) |
+| `GET` | `/health` | Liveness probe — exempt from API key authentication |
 
 > **Concurrency limit on `POST /runs`:** to prevent accidental LLM cost floods, the server rejects new
 > eval-run requests with HTTP 429 when `AGENTFORGE_MAX_CONCURRENT_RUNS` active background tasks are
 > already running (default: `10`). For high-throughput CI, raise this value in your deployment env.
 > For per-client rate limiting, place a reverse proxy (nginx / Cloudflare) in front of the API.
 
+> **Scenario count limit on `POST /runs`:** `scenario_count` must not exceed `AGENTFORGE_MAX_SCENARIOS`
+> (default: `2000`). Requests that exceed this value are rejected with HTTP 400.
+
+> **Authentication:** set `AGENTFORGE_API_KEY` to require a Bearer token on all `/api/v1/*` endpoints.
+> Requests without a valid `Authorization: Bearer <key>` header will receive HTTP 401. The `/health`
+> endpoint is always unauthenticated. When the env var is unset the server runs in unauthenticated
+> development mode.
+
 ### Example: Start an eval run
 
 ```bash
-# Upload agent file
+# Upload agent file (YAML or JSON; Content-Type should match the file format)
 curl -X POST http://localhost:8080/api/v1/agents \
-  -H "Content-Type: text/plain" \
+  -H "Content-Type: application/yaml" \
   --data-binary @fixtures/customer-support-agent.yaml
 
-# Start eval run
+# Start eval run (all fields except agent_id are optional)
+# Add -H "Authorization: Bearer $AGENTFORGE_API_KEY" when authentication is enabled
 curl -X POST http://localhost:8080/api/v1/runs \
   -H "Content-Type: application/json" \
   -d '{
-    "agent_id": "<uuid>",
+    "agent_id": "550e8400-e29b-41d4-a716-446655440000",
     "scenario_count": 100,
     "concurrency": 10,
-    "seed": 42
+    "seed": 42,
+    "threshold": 0.85,
+    "provider": "openai",
+    "judge_provider": "anthropic"
   }'
 
-# Get run results
-curl http://localhost:8080/api/v1/runs/<run-id>
+# Poll for run results (replace with the run UUID returned above)
+curl http://localhost:8080/api/v1/runs/7dc53df0-c5fa-4f6c-b6b5-8d2d19afe5b1
 ```
 
 ---
@@ -416,7 +433,7 @@ Every execution trace is scored across six dimensions:
 | Instruction adherence | 7% | LLM judge with rubric | Did the agent follow all behavioral constraints? |
 | Path efficiency | 3% | Step count vs. optimal | Was the shortest valid path taken? |
 
-Weights are configurable via environment variables (`AGENTFORGE_WEIGHT_TASK`, `AGENTFORGE_WEIGHT_TOOL`, `AGENTFORGE_WEIGHT_ARGS`, `AGENTFORGE_WEIGHT_SCHEMA`, `AGENTFORGE_WEIGHT_INSTR`, `AGENTFORGE_WEIGHT_PATH`) or via per-run CLI flags (`--weight-task`, `--weight-tool`, etc.). The judge LLM **must be different from the agent model** to prevent circular bias — this is enforced at runtime.
+Weights are configurable via environment variables (`AGENTFORGE_WEIGHT_TASK`, `AGENTFORGE_WEIGHT_TOOL`, `AGENTFORGE_WEIGHT_ARGS`, `AGENTFORGE_WEIGHT_SCHEMA`, `AGENTFORGE_WEIGHT_INSTR`, `AGENTFORGE_WEIGHT_PATH`) or via per-run CLI flags (`--weight-task`, `--weight-tool`, etc.). The judge LLM **must use a different provider from the agent** to prevent circular bias — enforcement is at the provider level (e.g., `openai` vs `anthropic`), not the individual model ID. The API returns HTTP 400 if `provider` and `judge_provider` are the same string.
 
 ### Failure Clusters
 
@@ -461,10 +478,11 @@ All configuration is via environment variables. See [`.env.example`](.env.exampl
 | `AGENTFORGE_PORT` | `8080` | API server port |
 | `AGENTFORGE_LOG_LEVEL` | `info` | Log level (trace/debug/info/warn/error) |
 | `AGENTFORGE_MAX_CONCURRENT_RUNS` | `10` | Max simultaneous background eval runs (HTTP 429 when exceeded) |
+| `AGENTFORGE_API_KEY` | — | Bearer token for API authentication. When set, all `/api/v1/*` endpoints require `Authorization: Bearer <key>`. Unset = unauthenticated dev mode |
 | `AGENTFORGE_JUDGE_PROVIDER` | `openai` | LLM provider for the judge |
 | `AGENTFORGE_JUDGE_MODEL` | `gpt-4o` | Judge model ID |
 | `AGENTFORGE_DEFAULT_SCENARIOS` | `100` | Default scenario count per run |
-| `AGENTFORGE_MAX_SCENARIOS` | `2000` | Maximum scenarios allowed |
+| `AGENTFORGE_MAX_SCENARIOS` | `2000` | Maximum scenarios allowed per run (HTTP 400 when exceeded) |
 | `AGENTFORGE_DEFAULT_CONCURRENCY` | `10` | Parallel worker count |
 | `AGENTFORGE_DEFAULT_PASS_THRESHOLD` | `0.85` | Minimum score to pass a run |
 | `AGENTFORGE_SCORE_GATE_DELTA` | `0.03` | Required score improvement to promote |
@@ -505,7 +523,7 @@ cargo test --workspace -- --nocapture
 ```
 
 The test suite covers:
-- Agent file parsing (all 5 formats)
+- Agent file parsing (all 6 formats)
 - Scenario generation (schema-derived, adversarial, domain-seeded)
 - Runner execution with mocked LLM
 - Scoring logic (all 6 dimensions)
@@ -541,8 +559,8 @@ AgentForge is published as a reusable GitHub Action. No Rust toolchain, database
 | `concurrency` | no | `10` | Parallel workers for running scenarios |
 | `seed` | no | `42` | Random seed for reproducible scenario generation |
 | `threshold` | no | `0.85` | Minimum aggregate score to gate promotion (0.0–1.0) |
-| `provider` | no | `openai` | LLM provider for the agent under test: `openai` \| `anthropic` \| `nvidia` |
-| `judge_provider` | no | `anthropic` | Judge LLM provider (must differ from `provider`): `openai` \| `anthropic` \| `nvidia` |
+| `provider` | no | `openai` | LLM provider for the agent under test: `openai` \| `anthropic` \| `nvidia` \| `ollama` \| `bedrock` (ollama and bedrock require a self-hosted runner) |
+| `judge_provider` | no | `anthropic` | Judge LLM provider (must differ from `provider` at the provider level): `openai` \| `anthropic` \| `nvidia` \| `ollama` \| `bedrock` |
 | `version` | no | _(action ref)_ | Specific AgentForge release to use (e.g. `v1.2.3`). Defaults to the version of this action. |
 
 ### Outputs
@@ -739,15 +757,21 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for dev environment setup, commit message
 
 | Feature | Description |
 |---------|-------------|
-| Online eval | Shadow-mode real traffic comparison between current and candidate |
-| Fine-tune exporter | Export labeled trace pairs as JSONL for OpenAI / Anthropic / HuggingFace |
-| Multi-agent testing | Test agent teams (CrewAI, LangGraph) as a composed unit |
-| Red-teaming mode | Adversarial safety probing — jailbreak attempts, prompt injection, data leakage |
-| Benchmark comparison | Compare against GAIA, AgentBench, WebArena |
-| Observability hooks | Export traces to Datadog, Grafana, LangSmith, or any OTLP backend |
-| Cost optimizer | Recommend model downgrades when smaller models score equivalently |
+| Online eval | ✅ Implemented — shadow-mode real traffic comparison via `POST /api/v1/shadow-runs` |
+| Fine-tune exporter | ✅ Implemented — export trace pairs as JSONL via `POST /api/v1/exports/finetune` |
+| Multi-agent testing | ✅ Implemented — `agentforge-multiagent` crate for composed agent teams |
+| Red-teaming mode | ✅ Implemented — adversarial safety probes via `--red-team` CLI flag |
+| Benchmark comparison | ✅ Implemented — compare against standard suites via `POST /api/v1/benchmarks` |
+| Observability hooks | ✅ Implemented — OTLP trace export via `OTEL_EXPORTER_OTLP_ENDPOINT` |
+| Cost optimizer | ✅ Implemented — model downgrade recommendations via `--cost-optimize` CLI flag |
 
 > **Web dashboard** (`web/`) is already included in this repo and served via the Docker Compose stack on port 3000.
+
+---
+
+## Privacy
+
+AgentForge is a self-hosted platform. It sends **no telemetry, analytics, or usage data** to any external service. All evaluation data, agent files, and traces remain within your own infrastructure.
 
 ---
 
