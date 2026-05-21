@@ -417,12 +417,14 @@ impl agentforge_runner::LlmClient for StubLlmClient {
 }
 
 /// Build a minimal `AppState` with a lazy (never-connected) Postgres pool.
-/// No actual DB connection is made unless a query is executed — safe for all
-/// tests that only hit the auth middleware or the health probe.
+/// In CI, DATABASE_URL points to the real test postgres (already migrated);
+/// locally it falls back to a stub URL — the pool is lazy and only actually
+/// connects when a query is executed.
 fn make_test_state(api_key: Option<String>) -> std::sync::Arc<agentforge_api::AppState> {
     use std::sync::{atomic::AtomicI64, Arc};
-    let db = sqlx::PgPool::connect_lazy("postgres://stub:stub@localhost/stub_unused_agentforge")
-        .unwrap();
+    let db_url = std::env::var("DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://stub:stub@localhost/stub_unused_agentforge".to_string());
+    let db = sqlx::PgPool::connect_lazy(&db_url).unwrap();
     Arc::new(agentforge_api::AppState {
         db,
         llm_client: Arc::new(StubLlmClient),

@@ -94,7 +94,12 @@ mod tests {
     /// Build an `AppState` whose DB pool is lazy (no actual connection is made)
     /// so auth-only tests can run without a Postgres server.
     fn make_test_state(api_key: Option<String>) -> Arc<AppState> {
-        let db = sqlx::PgPool::connect_lazy("postgres://stub:stub@localhost/stub_unused").unwrap();
+        // In CI, DATABASE_URL points to the real test postgres. Locally it falls
+        // back to a stub URL — the lazy pool only connects if a query is executed,
+        // and none of the auth-middleware tests issue any DB queries.
+        let db_url = std::env::var("DATABASE_URL")
+            .unwrap_or_else(|_| "postgres://stub:stub@localhost/stub_unused".to_string());
+        let db = sqlx::PgPool::connect_lazy(&db_url).unwrap();
         Arc::new(AppState {
             db,
             llm_client: Arc::new(StubLlmClient),
