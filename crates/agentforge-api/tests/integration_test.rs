@@ -679,3 +679,268 @@ async fn unknown_route_returns_404() {
     let resp = app.oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 }
+
+// ─── Full pipeline test: github-actions-expert.agent.md ───────────────────
+//
+// This test exercises the complete eval pipeline against a real-world Copilot
+// agent file (github/awesome-copilot) without any live DB or paid LLM calls:
+//
+//   parse → validate → generate scenarios → run (mocked LLM) → score
+//
+// The fixture lives at fixtures/github-actions-expert.agent.md and is embedded
+// at compile time via include_str!.
+
+const GITHUB_ACTIONS_EXPERT_MD: &str =
+    include_str!("../../../fixtures/github-actions-expert.agent.md");
+
+// ── 1. Parse ────────────────────────────────────────────────────────────────
+
+#[test]
+fn github_actions_expert_parses_as_copilot_agent_md() {
+    let parsed = parse_agent_file(GITHUB_ACTIONS_EXPERT_MD).unwrap();
+    assert_eq!(parsed.format, AgentFileFormat::CopilotAgentMd);
+    assert_eq!(parsed.agent.name, "GitHub Actions Expert");
+    // System prompt is the Markdown body — must contain key sections
+    assert!(
+        parsed.agent.system_prompt.contains("GitHub Actions"),
+        "system_prompt should include agent content"
+    );
+    assert!(
+        parsed.agent.system_prompt.contains("security"),
+        "system_prompt should include security content"
+    );
+    // SHA is deterministic for the same content
+    assert_eq!(parsed.sha.len(), 64, "SHA should be a hex-encoded SHA-256");
+}
+
+#[test]
+fn github_actions_expert_tools_parsed() {
+    let parsed = parse_agent_file(GITHUB_ACTIONS_EXPERT_MD).unwrap();
+    // The frontmatter declares: ['github/*', 'search/codebase', 'edit/editFiles',
+    // 'execute/runInTerminal', 'read/readFile', 'search/fileSearch']
+    // After namespace stripping → github, codebase, editFiles, runInTerminal, readFile, fileSearch
+    assert!(
+        !parsed.agent.tools.is_empty(),
+        "Expected at least one tool from the frontmatter"
+    );
+    let tool_names: Vec<&str> = parsed.agent.tools.iter().map(|t| t.name.as_str()).collect();
+    assert!(
+        tool_names.contains(&"github"),
+        "Expected 'github' tool; got: {tool_names:?}"
+    );
+}
+
+#[test]
+fn github_actions_expert_description_in_metadata() {
+    let parsed = parse_agent_file(GITHUB_ACTIONS_EXPERT_MD).unwrap();
+    if let Some(meta) = parsed.agent.metadata {
+        if let Some(desc) = meta["description"].as_str() {
+            assert!(
+                desc.contains("GitHub Actions"),
+                "description should mention GitHub Actions: {desc}"
+            );
+        }
+    }
+}
+
+// ── 2. Validate ─────────────────────────────────────────────────────────────
+
+#[test]
+fn github_actions_expert_validates_without_hard_errors() {
+    let parsed = parse_agent_file(GITHUB_ACTIONS_EXPERT_MD).unwrap();
+    let result = validate_agent_file(&parsed.agent);
+    // Copilot agent.md files legitimately omit output_schema and constraints;
+    // the validator should emit warnings but no hard errors that block a run.
+    assert!(
+        result.errors.is_empty(),
+        "Unexpected validation errors: {:?}",
+        result.errors
+    );
+}
+
+#[test]
+fn github_actions_expert_validation_warns_about_missing_schema() {
+    let parsed = parse_agent_file(GITHUB_ACTIONS_EXPERT_MD).unwrap();
+    let result = validate_agent_file(&parsed.agent);
+    // Should have at least one warning (no output_schema / no constraints)
+    assert!(
+        !result.warnings.is_empty(),
+        "Expected at least one validation warning for a schema-free agent.md file"
+    );
+}
+
+// ── 3. Scenario generation (no LLM) ─────────────────────────────────────────
+
+#[tokio::test]
+async fn github_actions_expert_generates_scenarios() {
+    let parsed = parse_agent_file(GITHUB_ACTIONS_EXPERT_MD).unwrap();
+    let agent_id = Uuid::new_v4();
+
+    let scenarios = generate_scenarios(
+        &parsed.agent,
+        &ScenarioGeneratorConfig {
+            total_count: 10,
+            agent_id,
+            llm_api_key: None, // deterministic path only
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+
+    assert!(
+        !scenarios.is_empty(),
+        "Should generate at least one scenario"
+    );
+    assert!(scenarios.len() <= 10, "Should not exceed requested count");
+
+    // Every scenario must be associated with the correct agent
+    for s in &scenarios {
+        assert_eq!(s.agent_id, agent_id);
+    }
+}
+
+#[tokio::test]
+async fn github_actions_expert_adversarial_scenarios() {
+    use agentforge_scenarios::adversarial::generate_adversarial_scenarios;
+    let parsed = parse_agent_file(GITHUB_ACTIONS_EXPERT_MD).unwrap();
+    let scenarios = generate_adversarial_scenarios(&parsed.agent, 8, Uuid::new_v4()).unwrap();
+    assert!(
+        scenarios.len() >= 3,
+        "Expected at least 3 adversarial scenarios; got {}",
+        scenarios.len()
+    );
+    // Adversarial scenarios carry the Adversarial source tag
+    use agentforge_core::ScenarioSource;
+    assert!(
+        scenarios
+            .iter()
+            .all(|s| s.source == ScenarioSource::Adversarial),
+        "All returned scenarios should have Adversarial source"
+    );
+}
+
+// ── 4. Full pipeline: parse → generate → run (mocked LLM) → score ───────────
+
+#[tokio::test]
+async fn github_actions_expert_full_pipeline_with_mocked_llm() {
+    use agentforge_runner::{AgentRunner, OpenAiClient, RunnerConfig};
+    use agentforge_scorer::{score_run, ScorerConfig};
+
+    let mock_server = MockServer::start().await;
+
+    // Mock LLM: returns a plausible GitHub Actions workflow snippet
+    let mock_response = serde_json::json!({
+        "id": "chatcmpl-ga-expert",
+        "object": "chat.completion",
+        "created": 1700000000,
+        "model": "gpt-4o",
+        "choices": [{
+            "index": 0,
+            "message": {
+                "role": "assistant",
+                "content": "Here is a secure GitHub Actions workflow:\n\n```yaml\nname: CI\non:\n  push:\n    branches: [main]\npermissions:\n  contents: read\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2\n```\n\nKey security notes:\n- Pinned to full commit SHA\n- Minimal permissions (contents: read)\n- OIDC preferred over static credentials"
+            },
+            "finish_reason": "stop"
+        }],
+        "usage": {
+            "prompt_tokens": 200,
+            "completion_tokens": 120,
+            "total_tokens": 320
+        }
+    });
+
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(&mock_response))
+        .mount(&mock_server)
+        .await;
+
+    // Parse the real agent file
+    let parsed = parse_agent_file(GITHUB_ACTIONS_EXPERT_MD).unwrap();
+    let agent_id = Uuid::new_v4();
+
+    // Generate a small scenario set (deterministic — no LLM key)
+    let scenarios = generate_scenarios(
+        &parsed.agent,
+        &ScenarioGeneratorConfig {
+            total_count: 5,
+            agent_id,
+            llm_api_key: None,
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+
+    assert!(!scenarios.is_empty(), "Need at least one scenario to run");
+
+    // Run through mocked LLM
+    let client = std::sync::Arc::new(OpenAiClient::new(
+        format!("{}/v1", mock_server.uri()),
+        "test-key".to_string(),
+        "gpt-4o".to_string(),
+    ));
+    let runner = AgentRunner::new(
+        client,
+        RunnerConfig {
+            concurrency: 2,
+            ..Default::default()
+        },
+    );
+    let run_result = runner.run(&parsed.agent, scenarios.clone(), None).await;
+    let mut traces = run_result.traces;
+
+    // Every scenario must have a corresponding trace
+    assert_eq!(
+        traces.len(),
+        scenarios.len(),
+        "Trace count must match scenario count"
+    );
+
+    // Score all traces (no judge key → heuristic scoring only)
+    let run_id = Uuid::new_v4();
+    let scorer_config = ScorerConfig {
+        judge_api_key: String::new(), // no LLM judge
+        ..Default::default()
+    };
+    let scorecard = score_run(
+        &mut traces,
+        &scenarios,
+        &parsed.agent,
+        run_id,
+        &scorer_config,
+    )
+    .await
+    .unwrap();
+
+    // Basic scorecard sanity checks
+    assert_eq!(scorecard.agent_name, "GitHub Actions Expert");
+    assert_eq!(scorecard.total_scenarios, scenarios.len() as u32);
+    assert!(
+        scorecard.aggregate_score >= 0.0 && scorecard.aggregate_score <= 1.0,
+        "aggregate_score out of range: {}",
+        scorecard.aggregate_score
+    );
+    // `review_needed` is an orthogonal boolean flag — a Pass-status trace can
+    // also have review_needed=true, so the counts are not mutually exclusive.
+    // The statuses that are mutually exclusive are Pass/Fail/Error/ReviewNeeded;
+    // passed+failed+errors must be ≤ total (ReviewNeeded status makes up the rest).
+    assert!(
+        scorecard.passed + scorecard.failed + scorecard.errors <= scorecard.total_scenarios,
+        "passed+failed+errors exceeds total: {}+{}+{} > {}",
+        scorecard.passed,
+        scorecard.failed,
+        scorecard.errors,
+        scorecard.total_scenarios
+    );
+    assert!(
+        scorecard.review_needed <= scorecard.total_scenarios,
+        "review_needed count exceeds total scenarios"
+    );
+    // Mocked LLM always replies → no Error traces expected
+    assert_eq!(
+        scorecard.errors, 0,
+        "No traces should be in Error state when LLM always responds"
+    );
+}
