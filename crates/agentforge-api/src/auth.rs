@@ -125,10 +125,7 @@ mod tests {
     #[tokio::test]
     async fn auth_allows_all_when_no_api_key() {
         let app = test_router(None);
-        let req = Request::builder()
-            .uri("/test")
-            .body(Body::empty())
-            .unwrap();
+        let req = Request::builder().uri("/test").body(Body::empty()).unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
     }
@@ -138,10 +135,7 @@ mod tests {
     #[tokio::test]
     async fn auth_rejects_missing_auth_header() {
         let app = test_router(Some("secret-key-123".to_string()));
-        let req = Request::builder()
-            .uri("/test")
-            .body(Body::empty())
-            .unwrap();
+        let req = Request::builder().uri("/test").body(Body::empty()).unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     }
@@ -194,10 +188,7 @@ mod tests {
     #[tokio::test]
     async fn auth_401_includes_www_authenticate_header() {
         let app = test_router(Some("key".to_string()));
-        let req = Request::builder()
-            .uri("/test")
-            .body(Body::empty())
-            .unwrap();
+        let req = Request::builder().uri("/test").body(Body::empty()).unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
         let www_auth = resp
@@ -220,16 +211,11 @@ mod tests {
     #[tokio::test]
     async fn auth_401_response_body_has_correct_json() {
         let app = test_router(Some("key".to_string()));
-        let req = Request::builder()
-            .uri("/test")
-            .body(Body::empty())
-            .unwrap();
+        let req = Request::builder().uri("/test").body(Body::empty()).unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 
-        let bytes = axum::body::to_bytes(resp.into_body(), 4096)
-            .await
-            .unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), 4096).await.unwrap();
         let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(body["error"]["code"], "UNAUTHORIZED");
         assert!(!body["error"]["message"].as_str().unwrap_or("").is_empty());
@@ -305,10 +291,7 @@ mod tests {
             ))
             .with_state(state.clone());
 
-        let req = Request::builder()
-            .uri("/test")
-            .body(Body::empty())
-            .unwrap();
+        let req = Request::builder().uri("/test").body(Body::empty()).unwrap();
         let _ = app.oneshot(req).await.unwrap();
 
         assert_eq!(

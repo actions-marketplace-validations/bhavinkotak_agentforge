@@ -1253,17 +1253,22 @@ system_prompt: "You are a helpful test agent."
 
         let result = cmd_run(
             path.clone(),
-            10,    // scenario_count
-            4,     // concurrency
-            42,    // seed
+            10, // scenario_count
+            4,  // concurrency
+            42, // seed
             "openai".to_string(),
             "anthropic".to_string(),
-            0.85,  // threshold
-            None,  // output_json
-            true,  // dry_run — exits before any LLM calls
-            None,  // max_cost
-            None,  // agent_format
-            None, None, None, None, None, None,
+            0.85, // threshold
+            None, // output_json
+            true, // dry_run — exits before any LLM calls
+            None, // max_cost
+            None, // agent_format
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
             false, // red_team
             false, // cost_optimize
             false, // watch
@@ -1306,10 +1311,15 @@ system_prompt: "Cost cap abort test agent."
             "anthropic".to_string(),
             0.85,
             None,
-            false,          // NOT dry_run — cost check happens before dry_run
-            Some(0.01),     // max_cost very small → should abort
+            false,      // NOT dry_run — cost check happens before dry_run
+            Some(0.01), // max_cost very small → should abort
             None,
-            None, None, None, None, None, None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
             false,
             false,
             false,
@@ -1343,10 +1353,15 @@ system_prompt: "Cost cap abort test agent."
             "anthropic".to_string(),
             0.85,
             None,
-            true,  // dry_run
+            true, // dry_run
             None,
             None,
-            None, None, None, None, None, None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
             false,
             false,
             false,
@@ -1407,7 +1422,10 @@ system_prompt: "Cost cap abort test agent."
 
         let _ = std::fs::remove_file(&path);
 
-        assert_eq!(m1, m2, "mtime should be identical for two consecutive reads of an unmodified file");
+        assert_eq!(
+            m1, m2,
+            "mtime should be identical for two consecutive reads of an unmodified file"
+        );
     }
 
     /// `get_mtime` helper (matching the watch-loop's inline closure) returns None
@@ -1484,4 +1502,3 @@ system_prompt: "Cost cap abort test agent."
         );
     }
 }
-

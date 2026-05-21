@@ -420,12 +420,9 @@ impl agentforge_runner::LlmClient for StubLlmClient {
 /// No actual DB connection is made unless a query is executed — safe for all
 /// tests that only hit the auth middleware or the health probe.
 fn make_test_state(api_key: Option<String>) -> std::sync::Arc<agentforge_api::AppState> {
-    use std::sync::{
-        atomic::AtomicI64,
-        Arc,
-    };
-    let db =
-        sqlx::PgPool::connect_lazy("postgres://stub:stub@localhost/stub_unused_agentforge").unwrap();
+    use std::sync::{atomic::AtomicI64, Arc};
+    let db = sqlx::PgPool::connect_lazy("postgres://stub:stub@localhost/stub_unused_agentforge")
+        .unwrap();
     Arc::new(agentforge_api::AppState {
         db,
         llm_client: Arc::new(StubLlmClient),
@@ -578,8 +575,14 @@ async fn api_routes_401_includes_www_authenticate_header() {
         .get("WWW-Authenticate")
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
-    assert!(www.contains("Bearer"), "Missing 'Bearer' in WWW-Authenticate: {www}");
-    assert!(www.contains("agentforge"), "Missing realm 'agentforge' in WWW-Authenticate: {www}");
+    assert!(
+        www.contains("Bearer"),
+        "Missing 'Bearer' in WWW-Authenticate: {www}"
+    );
+    assert!(
+        www.contains("agentforge"),
+        "Missing realm 'agentforge' in WWW-Authenticate: {www}"
+    );
 }
 
 /// 401 response body must be valid JSON with the expected error envelope.
@@ -597,13 +600,10 @@ async fn api_routes_401_body_is_valid_json_error_envelope() {
     let resp = app.oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 
-    let bytes = axum::body::to_bytes(resp.into_body(), 8192)
-        .await
-        .unwrap();
+    let bytes = axum::body::to_bytes(resp.into_body(), 8192).await.unwrap();
     let body: serde_json::Value = serde_json::from_slice(&bytes).expect("401 body should be JSON");
     assert_eq!(
-        body["error"]["code"],
-        "UNAUTHORIZED",
+        body["error"]["code"], "UNAUTHORIZED",
         "error.code should be UNAUTHORIZED"
     );
     assert!(
@@ -679,4 +679,3 @@ async fn unknown_route_returns_404() {
     let resp = app.oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 }
-
