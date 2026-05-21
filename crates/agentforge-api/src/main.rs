@@ -42,12 +42,30 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
+    // Derive scorer judge credentials from the same provider selection so that
+    // switching AGENTFORGE_JUDGE_PROVIDER also routes the scorer correctly.
+    let judge_provider =
+        std::env::var("AGENTFORGE_JUDGE_PROVIDER").unwrap_or_else(|_| "openai".to_string());
+    let (default_judge_base_url, default_judge_api_key) = match judge_provider.as_str() {
+        "anthropic" => (
+            "https://api.anthropic.com/v1".to_string(),
+            std::env::var("ANTHROPIC_API_KEY").unwrap_or_default(),
+        ),
+        "nvidia" => (
+            "https://integrate.api.nvidia.com/v1".to_string(),
+            std::env::var("NVIDIA_API_KEY").unwrap_or_default(),
+        ),
+        _ => (
+            "https://api.openai.com/v1".to_string(),
+            std::env::var("OPENAI_API_KEY").unwrap_or_default(),
+        ),
+    };
     let scorer_config = ScorerConfig {
         judge_model: std::env::var("AGENTFORGE_JUDGE_MODEL")
             .unwrap_or_else(|_| "gpt-4o".to_string()),
         judge_base_url: std::env::var("AGENTFORGE_JUDGE_BASE_URL")
-            .unwrap_or_else(|_| "https://api.openai.com/v1".to_string()),
-        judge_api_key: std::env::var("OPENAI_API_KEY").unwrap_or_default(),
+            .unwrap_or(default_judge_base_url),
+        judge_api_key: std::env::var("AGENTFORGE_JUDGE_API_KEY").unwrap_or(default_judge_api_key),
         ..Default::default()
     };
 

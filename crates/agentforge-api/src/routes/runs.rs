@@ -251,6 +251,7 @@ async fn run_evaluation_background(
         state.llm_client.clone(),
         RunnerConfig {
             concurrency: concurrency as usize,
+            run_id,
             ..Default::default()
         },
     );
