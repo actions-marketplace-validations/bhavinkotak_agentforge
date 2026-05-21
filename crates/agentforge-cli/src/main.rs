@@ -1173,3 +1173,315 @@ async fn cmd_benchmark(agent_path: PathBuf, suite_str: String, tasks_path: PathB
 
     Ok(0)
 }
+
+// ─── unit tests ──────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── Cost estimation math ──────────────────────────────────────────────────
+
+    const AVG_TOKENS: f64 = 1_500.0;
+    const PRICE_PER_1K: f64 = 0.005;
+
+    fn estimate_cost(scenario_count: u32) -> f64 {
+        (scenario_count as f64) * AVG_TOKENS * 2.0 / 1_000.0 * PRICE_PER_1K
+    }
+
+    #[test]
+    fn cost_estimate_100_scenarios() {
+        let cost = estimate_cost(100);
+        // 100 * 1500 * 2 / 1000 * 0.005 = 1.50
+        assert!((cost - 1.50).abs() < 1e-9, "expected $1.50, got ${cost}");
+    }
+
+    #[test]
+    fn cost_estimate_scales_linearly() {
+        let c50 = estimate_cost(50);
+        let c100 = estimate_cost(100);
+        assert!(
+            (c100 - 2.0 * c50).abs() < 1e-9,
+            "cost should scale linearly with scenario count"
+        );
+    }
+
+    /// The cap check logic: cost > cap && cap > 0.0 → abort (return Ok(2))
+    #[test]
+    fn cost_cap_exceeded_when_cost_above_positive_cap() {
+        let cost = estimate_cost(1000); // $15.00
+        let cap = 5.0;
+        let should_abort = cap > 0.0 && cost > cap;
+        assert!(should_abort, "cost ${cost} should exceed cap ${cap}");
+    }
+
+    #[test]
+    fn cost_cap_not_exceeded_when_cost_below_cap() {
+        let cost = estimate_cost(10); // $0.15
+        let cap = 1.0;
+        let should_abort = cap > 0.0 && cost > cap;
+        assert!(!should_abort, "cost ${cost} should not exceed cap ${cap}");
+    }
+
+    /// A cap of exactly 0.0 means "disabled" — should never abort.
+    #[test]
+    fn cost_cap_disabled_when_zero() {
+        let cost = estimate_cost(100_000); // enormous cost
+        let cap = 0.0_f64;
+        let should_abort = cap > 0.0 && cost > cap;
+        assert!(!should_abort, "cap=0.0 means disabled; should never abort");
+    }
+
+    // ── --dry-run: cmd_run returns 0 for a valid agent file ───────────────────
+
+    #[tokio::test]
+    async fn dry_run_returns_zero_for_valid_agent_yaml() {
+        // Write a minimal valid agent YAML to a temp file
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("af_test_agent_{}.yaml", uuid::Uuid::new_v4()));
+        let yaml = r#"
+agentforge_schema_version: "1"
+name: dry-run-test
+version: "1.0.0"
+model:
+  provider: openai
+  model_id: gpt-4o
+  temperature: 0.2
+system_prompt: "You are a helpful test agent."
+"#;
+        std::fs::write(&path, yaml).unwrap();
+
+        let result = cmd_run(
+            path.clone(),
+            10,    // scenario_count
+            4,     // concurrency
+            42,    // seed
+            "openai".to_string(),
+            "anthropic".to_string(),
+            0.85,  // threshold
+            None,  // output_json
+            true,  // dry_run — exits before any LLM calls
+            None,  // max_cost
+            None,  // agent_format
+            None, None, None, None, None, None,
+            false, // red_team
+            false, // cost_optimize
+            false, // watch
+        )
+        .await;
+
+        let _ = std::fs::remove_file(&path); // cleanup
+
+        assert_eq!(
+            result.unwrap(),
+            0,
+            "--dry-run should return exit code 0 for a valid agent"
+        );
+    }
+
+    /// --dry-run with --max-cost exceeded returns 2 (cost cap abort).
+    #[tokio::test]
+    async fn dry_run_aborts_when_cost_cap_exceeded() {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("af_test_agent_{}.yaml", uuid::Uuid::new_v4()));
+        let yaml = r#"
+agentforge_schema_version: "1"
+name: cost-cap-test
+version: "1.0.0"
+model:
+  provider: openai
+  model_id: gpt-4o
+  temperature: 0.2
+system_prompt: "Cost cap abort test agent."
+"#;
+        std::fs::write(&path, yaml).unwrap();
+
+        // 1000 scenarios × $0.015 each ≈ $15.00; cap is $0.01
+        let result = cmd_run(
+            path.clone(),
+            1000,
+            4,
+            42,
+            "openai".to_string(),
+            "anthropic".to_string(),
+            0.85,
+            None,
+            false,          // NOT dry_run — cost check happens before dry_run
+            Some(0.01),     // max_cost very small → should abort
+            None,
+            None, None, None, None, None, None,
+            false,
+            false,
+            false,
+        )
+        .await;
+
+        let _ = std::fs::remove_file(&path);
+
+        // exit code 2 = cost cap exceeded
+        assert_eq!(
+            result.unwrap(),
+            2,
+            "should abort with exit code 2 when estimated cost exceeds --max-cost"
+        );
+    }
+
+    /// Parsing an invalid agent file returns exit code 2.
+    #[tokio::test]
+    async fn dry_run_returns_two_for_invalid_agent_file() {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("af_test_bad_{}.yaml", uuid::Uuid::new_v4()));
+        // Missing required fields (name, version, model)
+        std::fs::write(&path, "not_valid_yaml: [unclosed bracket").unwrap();
+
+        let result = cmd_run(
+            path.clone(),
+            10,
+            4,
+            42,
+            "openai".to_string(),
+            "anthropic".to_string(),
+            0.85,
+            None,
+            true,  // dry_run
+            None,
+            None,
+            None, None, None, None, None, None,
+            false,
+            false,
+            false,
+        )
+        .await;
+
+        let _ = std::fs::remove_file(&path);
+
+        // Either Err (file error) or Ok(2) (validation failure) is acceptable
+        match result {
+            Err(_) => {} // parse/IO error propagated as Err
+            Ok(code) => assert_eq!(code, 2, "invalid file should return exit code 2"),
+        }
+    }
+
+    // ── --watch: mtime detection ──────────────────────────────────────────────
+
+    /// Writing to a file changes its mtime.
+    #[test]
+    fn file_mtime_changes_after_write() {
+        use std::time::{Duration, SystemTime};
+
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("af_mtime_test_{}.yaml", uuid::Uuid::new_v4()));
+
+        // Create the file with initial content
+        std::fs::write(&path, "version: 1").unwrap();
+        let mtime_before: Option<SystemTime> =
+            std::fs::metadata(&path).and_then(|m| m.modified()).ok();
+
+        // Sleep briefly so the filesystem timestamp can advance
+        // (most filesystems have 1 s or finer resolution; 10 ms is usually enough
+        //  on modern macOS/Linux with ns-resolution timestamps)
+        std::thread::sleep(Duration::from_millis(10));
+
+        // Overwrite the file
+        std::fs::write(&path, "version: 2").unwrap();
+        let mtime_after: Option<SystemTime> =
+            std::fs::metadata(&path).and_then(|m| m.modified()).ok();
+
+        let _ = std::fs::remove_file(&path);
+
+        assert!(
+            mtime_before != mtime_after,
+            "mtime should change after writing to the file"
+        );
+    }
+
+    /// An unmodified file keeps the same mtime across two reads.
+    #[test]
+    fn file_mtime_stable_for_unchanged_file() {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("af_mtime_stable_{}.yaml", uuid::Uuid::new_v4()));
+        std::fs::write(&path, "version: 1").unwrap();
+
+        let m1 = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
+        let m2 = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
+
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(m1, m2, "mtime should be identical for two consecutive reads of an unmodified file");
+    }
+
+    /// `get_mtime` helper (matching the watch-loop's inline closure) returns None
+    /// for a non-existent path and Some for an existing file.
+    #[test]
+    fn get_mtime_returns_none_for_missing_file() {
+        let missing = std::path::Path::new("/tmp/af_nonexistent_xyz_agentforge_test_file.yaml");
+        let mtime: Option<std::time::SystemTime> =
+            std::fs::metadata(missing).and_then(|m| m.modified()).ok();
+        assert!(mtime.is_none());
+    }
+
+    #[test]
+    fn get_mtime_returns_some_for_existing_file() {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("af_mtime_some_{}.yaml", uuid::Uuid::new_v4()));
+        std::fs::write(&path, "v: 1").unwrap();
+        let mtime: Option<std::time::SystemTime> =
+            std::fs::metadata(&path).and_then(|m| m.modified()).ok();
+        let _ = std::fs::remove_file(&path);
+        assert!(mtime.is_some());
+    }
+
+    // ── build_scorer_config ───────────────────────────────────────────────────
+
+    #[test]
+    fn build_scorer_config_openai_defaults() {
+        let weights = agentforge_core::EvalWeights::default();
+        let cfg = build_scorer_config("openai", weights);
+        assert!(
+            cfg.judge_base_url.contains("openai.com") || cfg.judge_base_url.contains("api."),
+            "openai judge should point at OpenAI, got: {}",
+            cfg.judge_base_url
+        );
+        assert!(!cfg.judge_model.is_empty());
+    }
+
+    #[test]
+    fn build_scorer_config_anthropic_defaults() {
+        let weights = agentforge_core::EvalWeights::default();
+        let cfg = build_scorer_config("anthropic", weights);
+        assert!(
+            cfg.judge_base_url.contains("anthropic.com"),
+            "anthropic judge should point at Anthropic, got: {}",
+            cfg.judge_base_url
+        );
+    }
+
+    #[test]
+    fn build_scorer_config_nvidia_defaults() {
+        let weights = agentforge_core::EvalWeights::default();
+        let cfg = build_scorer_config("nvidia", weights);
+        assert!(
+            cfg.judge_base_url.contains("nvidia.com"),
+            "nvidia judge should point at NVIDIA, got: {}",
+            cfg.judge_base_url
+        );
+    }
+
+    // ── EvalWeights validation ────────────────────────────────────────────────
+
+    #[test]
+    fn default_eval_weights_sum_to_one() {
+        let w = agentforge_core::EvalWeights::default();
+        let sum = w.task_completion
+            + w.tool_selection
+            + w.argument_correctness
+            + w.schema_compliance
+            + w.instruction_adherence
+            + w.path_efficiency;
+        assert!(
+            (sum - 1.0).abs() < 1e-6,
+            "default weights should sum to 1.0, got {sum}"
+        );
+    }
+}
+

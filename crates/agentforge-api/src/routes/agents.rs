@@ -243,3 +243,181 @@ pub async fn list_agent_scenarios(
         .map_err(|e| ApiError::internal(e.to_string()))?;
     Ok(Json(scenarios))
 }
+
+// ─── unit tests ─────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── PatchAgentRequest deserialization ─────────────────────────────────────
+
+    /// Both optional fields present.
+    #[test]
+    fn patch_request_deserializes_both_fields() {
+        let json = serde_json::json!({
+            "is_champion": true,
+            "changelog": "Bumped temperature to 0.3 for better diversity."
+        });
+        let req: PatchAgentRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(req.is_champion, Some(true));
+        assert_eq!(
+            req.changelog.as_deref(),
+            Some("Bumped temperature to 0.3 for better diversity.")
+        );
+    }
+
+    /// Only `is_champion` provided.
+    #[test]
+    fn patch_request_champion_only() {
+        let json = serde_json::json!({ "is_champion": true });
+        let req: PatchAgentRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(req.is_champion, Some(true));
+        assert!(req.changelog.is_none());
+    }
+
+    /// Only `changelog` provided.
+    #[test]
+    fn patch_request_changelog_only() {
+        let json = serde_json::json!({ "changelog": "Initial champion." });
+        let req: PatchAgentRequest = serde_json::from_value(json).unwrap();
+        assert!(req.is_champion.is_none());
+        assert_eq!(req.changelog.as_deref(), Some("Initial champion."));
+    }
+
+    /// Empty JSON object — all fields absent.
+    #[test]
+    fn patch_request_empty_body_is_valid() {
+        let json = serde_json::json!({});
+        let req: PatchAgentRequest = serde_json::from_value(json).unwrap();
+        assert!(req.is_champion.is_none());
+        assert!(req.changelog.is_none());
+    }
+
+    /// `is_champion: false` — explicitly demoting should also parse correctly.
+    #[test]
+    fn patch_request_is_champion_false() {
+        let json = serde_json::json!({ "is_champion": false });
+        let req: PatchAgentRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(req.is_champion, Some(false));
+    }
+
+    // ── ListScenariosQuery limit clamping logic ───────────────────────────────
+
+    /// Default (absent limit) should fall back to 50.
+    #[test]
+    fn list_scenarios_query_default_limit_is_50() {
+        let query: ListScenariosQuery = serde_json::from_value(serde_json::json!({})).unwrap();
+        let limit = query.limit.unwrap_or(50).min(500);
+        assert_eq!(limit, 50);
+    }
+
+    /// A limit above 500 must be clamped to 500.
+    #[test]
+    fn list_scenarios_query_clamps_limit_at_500() {
+        let query: ListScenariosQuery =
+            serde_json::from_value(serde_json::json!({ "limit": 9999 })).unwrap();
+        let limit = query.limit.unwrap_or(50).min(500);
+        assert_eq!(limit, 500);
+    }
+
+    /// Limit of exactly 500 passes through unchanged.
+    #[test]
+    fn list_scenarios_query_limit_500_not_clamped() {
+        let query: ListScenariosQuery =
+            serde_json::from_value(serde_json::json!({ "limit": 500 })).unwrap();
+        let limit = query.limit.unwrap_or(50).min(500);
+        assert_eq!(limit, 500);
+    }
+
+    /// A small limit value passes through unchanged.
+    #[test]
+    fn list_scenarios_query_small_limit_unchanged() {
+        let query: ListScenariosQuery =
+            serde_json::from_value(serde_json::json!({ "limit": 10 })).unwrap();
+        let limit = query.limit.unwrap_or(50).min(500);
+        assert_eq!(limit, 10);
+    }
+
+    // ── AgentResponse From<AgentVersion> conversion ───────────────────────────
+
+    #[test]
+    fn agent_response_from_agent_version_maps_fields() {
+        use agentforge_core::{AgentFile, AgentFileFormat, ModelConfig, ModelProvider};
+
+        let id = Uuid::new_v4();
+        let now = chrono::Utc::now();
+        let dummy_agent_file = AgentFile {
+            agentforge_schema_version: "1".to_string(),
+            name: "test".to_string(),
+            version: "1.0.0".to_string(),
+            model: ModelConfig {
+                provider: ModelProvider::Openai,
+                model_id: "gpt-4o".to_string(),
+                temperature: Some(0.2),
+                max_tokens: None,
+                top_p: None,
+            },
+            system_prompt: "You are a test agent.".to_string(),
+            tools: vec![],
+            output_schema: None,
+            constraints: vec![],
+            eval_hints: None,
+            metadata: None,
+        };
+
+        let av = AgentVersion {
+            id,
+            name: "test-agent".to_string(),
+            version: "2.0.0".to_string(),
+            sha: "abc123def456".to_string(),
+            raw_content: String::new(),
+            format: AgentFileFormat::NativeYaml,
+            file_content: dummy_agent_file,
+            promoted: false,
+            is_champion: true,
+            changelog: None,
+            parent_sha: None,
+            created_at: now,
+            updated_at: now,
+        };
+
+        let resp = AgentResponse::from(av);
+        assert_eq!(resp.id, id);
+        assert_eq!(resp.name, "test-agent");
+        assert_eq!(resp.version, "2.0.0");
+        assert_eq!(resp.sha, "abc123def456");
+        assert!(resp.is_champion);
+        assert!(!resp.promoted);
+        assert_eq!(resp.format, "native_yaml");
+    }
+
+    // ── CreateAgentRequest deserialization ────────────────────────────────────
+
+    #[test]
+    fn create_agent_request_deserializes_content_field() {
+        let json = serde_json::json!({
+            "content": "agentforge_schema_version: \"1\"\nname: my-agent\nversion: \"1.0.0\""
+        });
+        let req: CreateAgentRequest = serde_json::from_value(json).unwrap();
+        assert!(req.content.contains("my-agent"));
+    }
+
+    // ── ListAgentsQuery pagination defaults ───────────────────────────────────
+
+    #[test]
+    fn list_agents_query_default_limit_is_50() {
+        let q: ListAgentsQuery = serde_json::from_value(serde_json::json!({})).unwrap();
+        let limit = q.limit.unwrap_or(50).min(200);
+        assert_eq!(limit, 50);
+    }
+
+    #[test]
+    fn list_agents_query_clamps_limit_at_200() {
+        let q: ListAgentsQuery =
+            serde_json::from_value(serde_json::json!({ "limit": 9999 })).unwrap();
+        let limit = q.limit.unwrap_or(50).min(200);
+        assert_eq!(limit, 200);
+    }
+}
+

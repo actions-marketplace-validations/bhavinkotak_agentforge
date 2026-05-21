@@ -391,3 +391,292 @@ fn scorecard_diff_computed_correctly() {
     assert!(challenger_agg > champ_agg, "Challenger should score higher");
     assert!((challenger_agg - champ_agg) > 0.0);
 }
+
+// ─── HTTP-level route tests (auth middleware + health + SSE) ───────────────
+
+/// Stub LLM client — never called in these tests; exists only to satisfy the
+/// `AppState::llm_client` field type.
+struct StubLlmClient;
+
+#[async_trait::async_trait]
+impl agentforge_runner::LlmClient for StubLlmClient {
+    async fn complete(
+        &self,
+        _req: agentforge_runner::LlmRequest,
+    ) -> agentforge_core::Result<agentforge_runner::LlmResponse> {
+        Err(agentforge_core::AgentForgeError::ConfigError(
+            "test stub — should not be called".to_string(),
+        ))
+    }
+    fn provider_name(&self) -> &str {
+        "stub"
+    }
+    fn model_id(&self) -> &str {
+        "stub-model"
+    }
+}
+
+/// Build a minimal `AppState` with a lazy (never-connected) Postgres pool.
+/// No actual DB connection is made unless a query is executed — safe for all
+/// tests that only hit the auth middleware or the health probe.
+fn make_test_state(api_key: Option<String>) -> std::sync::Arc<agentforge_api::AppState> {
+    use std::sync::{
+        atomic::AtomicI64,
+        Arc,
+    };
+    let db =
+        sqlx::PgPool::connect_lazy("postgres://stub:stub@localhost/stub_unused_agentforge").unwrap();
+    Arc::new(agentforge_api::AppState {
+        db,
+        llm_client: Arc::new(StubLlmClient),
+        scorer_config: agentforge_scorer::ScorerConfig::default(),
+        gatekeeper_config: agentforge_gatekeeper::GatekeeperConfig::default(),
+        trace_exporter: Arc::new(agentforge_observability::NoopExporter),
+        active_runs: Arc::new(AtomicI64::new(0)),
+        max_concurrent_runs: 10,
+        max_scenarios: 2000,
+        api_key,
+    })
+}
+
+/// Convenience: build the full axum router under test.
+fn make_test_router(api_key: Option<String>) -> axum::Router {
+    agentforge_api::router(make_test_state(api_key))
+}
+
+// ── health probe ───────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn health_endpoint_returns_200() {
+    use axum::{body::Body, http::Request, http::StatusCode};
+    use tower::ServiceExt;
+
+    let app = make_test_router(None);
+    let req = Request::builder()
+        .uri("/health")
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+}
+
+/// The health endpoint must be reachable even when an API key is configured —
+/// it is explicitly exempt from authentication.
+#[tokio::test]
+async fn health_endpoint_exempt_from_auth() {
+    use axum::{body::Body, http::Request, http::StatusCode};
+    use tower::ServiceExt;
+
+    let app = make_test_router(Some("secret-key".to_string()));
+    let req = Request::builder()
+        .uri("/health")
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+}
+
+// ── auth: no api_key configured (dev mode) ────────────────────────────────
+
+/// When no API key is configured, requests without Authorization header are allowed.
+#[tokio::test]
+async fn api_routes_allow_all_without_api_key() {
+    use axum::{body::Body, http::Request, http::StatusCode};
+    use tower::ServiceExt;
+
+    let app = make_test_router(None);
+    // POST /api/v1/agents is a real route — it will hit the DB; expect 500 not 401
+    let req = Request::builder()
+        .method("GET")
+        .uri("/api/v1/runs")
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    // 500 (DB unreachable) or 200 is fine — what matters is NOT 401
+    assert_ne!(
+        resp.status(),
+        StatusCode::UNAUTHORIZED,
+        "unauthenticated request must not be rejected when no api_key is configured"
+    );
+}
+
+// ── auth: api_key is set ──────────────────────────────────────────────────
+
+/// A request with no Authorization header must be rejected with 401.
+#[tokio::test]
+async fn api_routes_reject_missing_auth_header_with_401() {
+    use axum::{body::Body, http::Request, http::StatusCode};
+    use tower::ServiceExt;
+
+    let app = make_test_router(Some("the-real-key".to_string()));
+    let req = Request::builder()
+        .method("GET")
+        .uri("/api/v1/runs")
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+}
+
+/// A request with a wrong Bearer token must be rejected with 401.
+#[tokio::test]
+async fn api_routes_reject_wrong_bearer_token_with_401() {
+    use axum::{body::Body, http::Request, http::StatusCode};
+    use tower::ServiceExt;
+
+    let app = make_test_router(Some("the-real-key".to_string()));
+    let req = Request::builder()
+        .method("GET")
+        .uri("/api/v1/runs")
+        .header("Authorization", "Bearer wrong-key")
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+}
+
+/// A request with the correct Bearer token must pass the auth gate.
+/// (The downstream handler may still return 500 because the DB isn't live —
+///  we only assert the status is NOT 401.)
+#[tokio::test]
+async fn api_routes_allow_valid_bearer_token() {
+    use axum::{body::Body, http::Request, http::StatusCode};
+    use tower::ServiceExt;
+
+    let app = make_test_router(Some("my-valid-key".to_string()));
+    let req = Request::builder()
+        .method("GET")
+        .uri("/api/v1/runs")
+        .header("Authorization", "Bearer my-valid-key")
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_ne!(
+        resp.status(),
+        StatusCode::UNAUTHORIZED,
+        "valid token should pass auth; got {:?}",
+        resp.status()
+    );
+}
+
+/// 401 response must include WWW-Authenticate: Bearer realm="agentforge".
+#[tokio::test]
+async fn api_routes_401_includes_www_authenticate_header() {
+    use axum::{body::Body, http::Request, http::StatusCode};
+    use tower::ServiceExt;
+
+    let app = make_test_router(Some("key".to_string()));
+    let req = Request::builder()
+        .method("GET")
+        .uri("/api/v1/runs")
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    let www = resp
+        .headers()
+        .get("WWW-Authenticate")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    assert!(www.contains("Bearer"), "Missing 'Bearer' in WWW-Authenticate: {www}");
+    assert!(www.contains("agentforge"), "Missing realm 'agentforge' in WWW-Authenticate: {www}");
+}
+
+/// 401 response body must be valid JSON with the expected error envelope.
+#[tokio::test]
+async fn api_routes_401_body_is_valid_json_error_envelope() {
+    use axum::{body::Body, http::Request, http::StatusCode};
+    use tower::ServiceExt;
+
+    let app = make_test_router(Some("key".to_string()));
+    let req = Request::builder()
+        .method("GET")
+        .uri("/api/v1/runs")
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
+    let bytes = axum::body::to_bytes(resp.into_body(), 8192)
+        .await
+        .unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&bytes).expect("401 body should be JSON");
+    assert_eq!(
+        body["error"]["code"],
+        "UNAUTHORIZED",
+        "error.code should be UNAUTHORIZED"
+    );
+    assert!(
+        body["error"]["message"].is_string(),
+        "error.message should be a string"
+    );
+}
+
+// ── SSE endpoint: content-type ─────────────────────────────────────────────
+
+/// GET /api/v1/runs/:id/progress must respond with Content-Type: text/event-stream.
+/// (The run won't be found — we just verify the SSE framing is set up correctly.)
+#[tokio::test]
+async fn sse_progress_endpoint_responds_with_event_stream_content_type() {
+    use axum::{body::Body, http::Request};
+    use tower::ServiceExt;
+
+    let app = make_test_router(None);
+    let run_id = Uuid::new_v4();
+    let req = Request::builder()
+        .method("GET")
+        .uri(format!("/api/v1/runs/{run_id}/progress"))
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    let ct = resp
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    assert!(
+        ct.contains("text/event-stream"),
+        "SSE endpoint should return Content-Type: text/event-stream, got: {ct}"
+    );
+}
+
+/// The SSE progress endpoint must not require authentication even when an API
+/// key is set (matches standard practice of not auth-gating stream endpoints
+/// when credentials appear in the URL or via EventSource which can't set headers).
+/// Update: The endpoint IS behind auth, so with a key and no header → 401.
+#[tokio::test]
+async fn sse_progress_endpoint_requires_auth_when_key_is_set() {
+    use axum::{body::Body, http::Request, http::StatusCode};
+    use tower::ServiceExt;
+
+    let app = make_test_router(Some("my-key".to_string()));
+    let run_id = Uuid::new_v4();
+    let req = Request::builder()
+        .method("GET")
+        .uri(format!("/api/v1/runs/{run_id}/progress"))
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::UNAUTHORIZED,
+        "SSE endpoint must enforce auth just like every other /api/v1/* route"
+    );
+}
+
+// ── unknown routes ─────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn unknown_route_returns_404() {
+    use axum::{body::Body, http::Request, http::StatusCode};
+    use tower::ServiceExt;
+
+    let app = make_test_router(None);
+    let req = Request::builder()
+        .uri("/api/v1/does-not-exist")
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}
+

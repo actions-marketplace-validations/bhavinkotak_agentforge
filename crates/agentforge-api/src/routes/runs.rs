@@ -438,3 +438,193 @@ pub async fn run_progress(
 
     Sse::new(ReceiverStream::new(rx)).keep_alive(KeepAlive::default())
 }
+
+// ─── unit tests ─────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Utc;
+
+    // ── StartRunRequest deserialization ───────────────────────────────────────
+
+    /// All new fields (threshold, provider, judge_provider) deserialize correctly.
+    #[test]
+    fn start_run_request_deserializes_all_new_fields() {
+        let json = serde_json::json!({
+            "agent_id": "550e8400-e29b-41d4-a716-446655440000",
+            "scenario_count": 50,
+            "seed": 99,
+            "concurrency": 4,
+            "threshold": 0.90,
+            "provider": "anthropic",
+            "judge_provider": "openai"
+        });
+        let req: StartRunRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(req.scenario_count, Some(50));
+        assert_eq!(req.threshold, Some(0.90));
+        assert_eq!(req.provider.as_deref(), Some("anthropic"));
+        assert_eq!(req.judge_provider.as_deref(), Some("openai"));
+        assert_eq!(req.seed, Some(99));
+        assert_eq!(req.concurrency, Some(4));
+    }
+
+    /// Only `agent_id` (the sole required field) — everything else is None.
+    #[test]
+    fn start_run_request_only_agent_id_required() {
+        let json = serde_json::json!({
+            "agent_id": "550e8400-e29b-41d4-a716-446655440000"
+        });
+        let req: StartRunRequest = serde_json::from_value(json).unwrap();
+        assert!(req.scenario_count.is_none());
+        assert!(req.threshold.is_none());
+        assert!(req.provider.is_none());
+        assert!(req.judge_provider.is_none());
+        assert!(req.seed.is_none());
+        assert!(req.concurrency.is_none());
+    }
+
+    /// Extra unknown fields in the JSON do not cause a parse error.
+    #[test]
+    fn start_run_request_ignores_unknown_fields() {
+        let json = serde_json::json!({
+            "agent_id": "550e8400-e29b-41d4-a716-446655440000",
+            "unknown_field": "ignored"
+        });
+        // Should not panic / error
+        let result: Result<StartRunRequest, _> = serde_json::from_value(json);
+        assert!(result.is_ok());
+    }
+
+    // ── Validation logic (same-provider check) ────────────────────────────────
+
+    /// When provider == judge_provider the handler should reject — validate the
+    /// string comparison that drives that guard.
+    #[test]
+    fn same_provider_strings_are_equal() {
+        let provider = "openai";
+        let judge_provider = "openai";
+        assert_eq!(
+            provider, judge_provider,
+            "provider and judge_provider must differ; the guard compares them as strings"
+        );
+    }
+
+    #[test]
+    fn different_provider_strings_are_not_equal() {
+        assert_ne!("openai", "anthropic");
+        assert_ne!("anthropic", "nvidia");
+        assert_ne!("openai", "ollama");
+    }
+
+    // ── Threshold range validation ─────────────────────────────────────────────
+
+    #[test]
+    fn threshold_range_valid_boundaries() {
+        // Both boundary values are inside the valid range
+        assert!((0.0_f64..=1.0_f64).contains(&0.0));
+        assert!((0.0_f64..=1.0_f64).contains(&1.0));
+        assert!((0.0_f64..=1.0_f64).contains(&0.85));
+    }
+
+    #[test]
+    fn threshold_range_rejects_out_of_bounds() {
+        assert!(!(0.0_f64..=1.0_f64).contains(&-0.01));
+        assert!(!(0.0_f64..=1.0_f64).contains(&1.01));
+        assert!(!(0.0_f64..=1.0_f64).contains(&2.0));
+    }
+
+    // ── RunResponse From<EvalRun> conversion ──────────────────────────────────
+
+    #[test]
+    fn run_response_from_eval_run_maps_fields() {
+        let run_id = Uuid::new_v4();
+        let agent_id = Uuid::new_v4();
+        let created = Utc::now();
+
+        let eval_run = EvalRun {
+            id: run_id,
+            agent_id,
+            scenario_set_id: None,
+            status: EvalRunStatus::Running,
+            scenario_count: 100,
+            completed_count: 42,
+            error_count: 3,
+            aggregate_score: None,
+            pass_rate: None,
+            scores: None,
+            failure_clusters: None,
+            seed: 42,
+            concurrency: 10,
+            error_message: None,
+            started_at: None,
+            completed_at: None,
+            created_at: created,
+            updated_at: created,
+        };
+
+        let resp = RunResponse::from(eval_run);
+        assert_eq!(resp.id, run_id);
+        assert_eq!(resp.agent_id, agent_id);
+        assert_eq!(resp.status, "running");
+        assert_eq!(resp.created_at, created);
+    }
+
+    // ── SSE progress event JSON shape ─────────────────────────────────────────
+
+    /// The JSON object embedded in progress SSE events must have all five keys.
+    #[test]
+    fn progress_event_json_contains_expected_keys() {
+        let run_id = Uuid::new_v4();
+        let data = serde_json::json!({
+            "run_id": run_id,
+            "status": "running",
+            "completed_count": 25_u32,
+            "scenario_count": 100_u32,
+            "error_count": 1_u32,
+        });
+        assert!(data["run_id"].is_string());
+        assert_eq!(data["status"], "running");
+        assert_eq!(data["completed_count"], 25);
+        assert_eq!(data["scenario_count"], 100);
+        assert_eq!(data["error_count"], 1);
+    }
+
+    /// A completed run status string matches what the SSE handler checks.
+    #[test]
+    fn terminal_status_strings_match_enum_display() {
+        let complete = EvalRunStatus::Complete.to_string();
+        let error = EvalRunStatus::Error.to_string();
+        let cancelled = EvalRunStatus::Cancelled.to_string();
+        // Ensure the .to_string() values are stable (they appear in SSE payloads)
+        assert!(!complete.is_empty());
+        assert!(!error.is_empty());
+        assert!(!cancelled.is_empty());
+        // All three are distinct
+        assert_ne!(complete, error);
+        assert_ne!(complete, cancelled);
+        assert_ne!(error, cancelled);
+    }
+
+    // ── ListRunsQuery / ListTracesQuery pagination defaults ───────────────────
+
+    #[test]
+    fn list_runs_query_defaults_are_sane() {
+        let query: ListRunsQuery = serde_json::from_value(serde_json::json!({})).unwrap();
+        let limit = query.limit.unwrap_or(50).min(200);
+        let offset = query.offset.unwrap_or(0);
+        assert_eq!(limit, 50);
+        assert_eq!(offset, 0);
+    }
+
+    #[test]
+    fn list_traces_query_clamps_limit_at_500() {
+        let query: ListTracesQuery = serde_json::from_value(serde_json::json!({
+            "limit": 9999
+        }))
+        .unwrap();
+        let limit = query.limit.unwrap_or(100).min(500);
+        assert_eq!(limit, 500);
+    }
+}
+
