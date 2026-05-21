@@ -364,4 +364,67 @@ mod tests {
         let agent = normalize(&frontmatter, "Prompt.").unwrap();
         assert!(agent.tools.is_empty());
     }
+
+    /// Regression: every known Copilot capability must produce a non-empty
+    /// `properties` map so models can call the tool with real arguments.
+    /// Previously all tools had `properties: {}` which caused models to refuse
+    /// to invoke them (no parameters = no-op tool).
+    #[test]
+    fn all_known_capabilities_have_non_empty_schemas() {
+        let capabilities = [
+            "github/*",
+            "search/fileSearch",
+            "search/codebase",
+            "read/readFile",
+            "edit/editFiles",
+            "execute/runInTerminal",
+        ];
+        let frontmatter = serde_json::json!({
+            "name": "Full Agent",
+            "tools": capabilities
+        });
+        let agent = normalize(&frontmatter, "Prompt.").unwrap();
+        assert_eq!(agent.tools.len(), capabilities.len());
+        for tool in &agent.tools {
+            let props = tool
+                .parameters
+                .get("properties")
+                .and_then(|p| p.as_object())
+                .expect(&format!("'{}' must have a properties object", tool.name));
+            assert!(
+                !props.is_empty(),
+                "Tool '{}' has empty properties — models cannot call it",
+                tool.name
+            );
+            let required = tool
+                .parameters
+                .get("required")
+                .and_then(|r| r.as_array())
+                .expect(&format!("'{}' must have a required array", tool.name));
+            assert!(
+                !required.is_empty(),
+                "Tool '{}' has no required fields — models may skip it",
+                tool.name
+            );
+        }
+    }
+
+    /// Unknown/custom capabilities should fall back to a generic `input` field,
+    /// not an empty schema.
+    #[test]
+    fn unknown_capability_falls_back_to_generic_schema() {
+        let frontmatter = serde_json::json!({
+            "name": "Custom Agent",
+            "tools": ["custom/myTool", "context7/*"]
+        });
+        let agent = normalize(&frontmatter, "Prompt.").unwrap();
+        for tool in &agent.tools {
+            let props = tool
+                .parameters
+                .get("properties")
+                .and_then(|p| p.as_object())
+                .expect(&format!("'{}' must have properties", tool.name));
+            assert!(!props.is_empty(), "Fallback tool '{}' must not have empty properties", tool.name);
+        }
+    }
 }

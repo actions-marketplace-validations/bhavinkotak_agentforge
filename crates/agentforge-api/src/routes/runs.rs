@@ -53,6 +53,7 @@ pub struct RunResponse {
     pub id: Uuid,
     pub agent_id: Uuid,
     pub status: String,
+    pub aggregate_score: Option<f64>,
     pub created_at: chrono::DateTime<chrono::Utc>,
 }
 
@@ -62,6 +63,7 @@ impl From<EvalRun> for RunResponse {
             id: r.id,
             agent_id: r.agent_id,
             status: r.status.to_string(),
+            aggregate_score: r.aggregate_score,
             created_at: r.created_at,
         }
     }

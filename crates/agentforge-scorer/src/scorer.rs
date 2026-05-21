@@ -107,10 +107,7 @@ pub async fn score_trace(
 
     let review_needed = min_confidence < config.review_confidence_threshold;
 
-    // 4. Classify failure cluster
-    let failure_cluster = classify_failure_cluster(trace, &scores, &det.failure_reasons);
-
-    // 5. Determine trace status
+    // 4. Determine trace status first (cluster classifier reads trace.status)
     let status = if aggregate >= 0.85 {
         TraceStatus::Pass
     } else if review_needed {
@@ -119,11 +116,16 @@ pub async fn score_trace(
         TraceStatus::Fail
     };
 
-    trace.scores = Some(scores);
+    trace.scores = Some(scores.clone());
     trace.aggregate_score = Some(aggregate);
-    trace.failure_cluster = failure_cluster.clone();
     trace.status = status;
     trace.review_needed = review_needed;
+
+    // 5. Classify failure cluster — must come after trace.status is finalised
+    //    so classify_failure_cluster sees the correct (Pass/Fail/ReviewNeeded)
+    //    status rather than the runner's initial Pass placeholder.
+    let failure_cluster = classify_failure_cluster(trace, &scores, &det.failure_reasons);
+    trace.failure_cluster = failure_cluster.clone();
 
     if !det.failure_reasons.is_empty() {
         trace.failure_reason = Some(det.failure_reasons.join("; "));
@@ -250,16 +252,15 @@ fn build_failure_cluster_summary(traces: &[Trace]) -> Vec<agentforge_core::Failu
         }
     }
 
-    let total_failed = failed_traces.len() as f64;
+    // Percentage is relative to ALL scenarios (not just failed) so the UI
+    // shows "X% of runs hit this failure mode" rather than a within-failures
+    // fraction that sums to 100% (confusing when only 1 cluster exists).
+    let total = traces.len().max(1) as f64;
     cluster_counts
         .into_iter()
         .map(
             |(cluster, (count, samples))| agentforge_core::FailureClusterSummary {
-                percentage: if total_failed > 0.0 {
-                    count as f64 / total_failed
-                } else {
-                    0.0
-                },
+                percentage: count as f64 / total,
                 cluster,
                 count,
                 sample_scenarios: samples,
@@ -428,5 +429,71 @@ mod tests {
 
         let avg = average_dimension_scores(&traces);
         assert!((avg.task_completion - 0.75).abs() < 1e-9);
+    }
+
+    /// Regression test: failure_cluster must be set AFTER trace.status is finalised.
+    /// Previously classify_failure_cluster ran before trace.status was updated so
+    /// it always saw TraceStatus::Pass (the runner's initial value) and returned
+    /// FailureCluster::NoFailure for every scored trace, including Fail ones.
+    #[tokio::test]
+    async fn failure_cluster_is_not_no_failure_for_fail_trace() {
+        let agent = make_simple_agent();
+        let scenario = make_simple_scenario();
+        let run_id = Uuid::new_v4();
+
+        // A trace that starts as Pass (runner default) but has very low scores
+        // so the scorer will mark it Fail.
+        let mut trace = make_passing_trace(run_id, scenario.id);
+        trace.tool_invocations = 0; // no tools called — low path efficiency
+        trace.llm_calls = 1;
+
+        let config = ScorerConfig {
+            judge_api_key: "".to_string(),
+            judge_model: "gpt-4o-judge".to_string(),
+            ..Default::default()
+        };
+
+        score_trace(&mut trace, &scenario, &agent, &config)
+            .await
+            .unwrap();
+
+        // The trace must NOT carry NoFailure when it ends up as Fail or ReviewNeeded
+        if trace.status == TraceStatus::Fail || trace.status == TraceStatus::ReviewNeeded {
+            assert_ne!(
+                trace.failure_cluster,
+                FailureCluster::NoFailure,
+                "Fail/ReviewNeeded trace must not have NoFailure cluster; got {trace:?}"
+            );
+        }
+    }
+
+    /// Regression test: build_failure_cluster_summary percentage is relative to
+    /// ALL traces (not just failed ones) so it reads as "X% of all scenarios".
+    #[test]
+    fn cluster_percentage_is_fraction_of_all_scenarios() {
+        let run_id = Uuid::new_v4();
+        let mut traces = vec![
+            make_passing_trace(run_id, Uuid::new_v4()),
+            make_passing_trace(run_id, Uuid::new_v4()),
+            make_passing_trace(run_id, Uuid::new_v4()),
+            make_passing_trace(run_id, Uuid::new_v4()),
+            make_passing_trace(run_id, Uuid::new_v4()),
+        ];
+        // Make 2 of them Fail with WrongTool cluster
+        traces[0].status = TraceStatus::Fail;
+        traces[0].failure_cluster = FailureCluster::WrongTool;
+        traces[1].status = TraceStatus::Fail;
+        traces[1].failure_cluster = FailureCluster::WrongTool;
+
+        let summary = build_failure_cluster_summary(&traces);
+        let wrong_tool = summary
+            .iter()
+            .find(|s| s.cluster == FailureCluster::WrongTool)
+            .expect("WrongTool cluster should be present");
+
+        assert_eq!(wrong_tool.count, 2);
+        // 2 out of 5 total = 40%, NOT 100% of failed
+        assert!((wrong_tool.percentage - 0.4).abs() < 1e-9,
+            "Expected 0.4 (40% of all scenarios), got {}", wrong_tool.percentage);
     }
 }
