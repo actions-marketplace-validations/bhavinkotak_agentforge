@@ -14,40 +14,30 @@ pub fn classify_failure_cluster(
         return FailureCluster::Unknown;
     }
 
-    // Classify based on the lowest scoring dimension and failure reasons
-    let failure_text = failure_reasons.join(" ").to_lowercase();
+    // --- Hard failures (unambiguous signal, check first) ---
 
-    // Schema violation: output schema compliance is very low
+    // Schema violation: output did not conform to required schema
     if scores.schema_compliance < 0.3 {
         return FailureCluster::SchemaViolation;
     }
 
-    // Wrong tool: tool selection accuracy is very low
-    if scores.tool_selection < 0.3 {
-        return FailureCluster::WrongTool;
-    }
-
-    // Hallucinated argument: argument correctness is very low
+    // Hallucinated argument: agent made up parameters
     if scores.argument_correctness < 0.3 {
         return FailureCluster::HallucinatedArgument;
     }
 
-    // Looping: detect multiple repeated LLM calls with similar content
+    // Looping: many LLM calls with very few tool calls between them
     if detect_loop(trace) {
         return FailureCluster::Looping;
     }
 
-    // Premature stop: path efficiency is 0 (no tools called when needed)
+    // No tools called at all despite being needed (pure premature stop)
     if scores.path_efficiency < 0.1 {
         return FailureCluster::PrematureStop;
     }
 
-    // Constraint breach: instruction adherence is very low
-    if scores.instruction_adherence < 0.3 {
-        return FailureCluster::ConstraintBreach;
-    }
-
-    // Check failure reasons for keywords
+    // --- Check keyword hints from deterministic failure reasons ---
+    let failure_text = failure_reasons.join(" ").to_lowercase();
     if failure_text.contains("wrong_tool") || failure_text.contains("missing required tools") {
         return FailureCluster::WrongTool;
     }
@@ -61,8 +51,20 @@ pub fn classify_failure_cluster(
         return FailureCluster::ConstraintBreach;
     }
 
-    // Default: unknown
-    FailureCluster::Unknown
+    // --- Soft failures: use the weakest dimension to name the primary failure ---
+    // This ensures we always return a meaningful cluster rather than Unknown.
+    // We compare raw scores; the one furthest from 1.0 is the root cause.
+    let candidates = [
+        (scores.task_completion, FailureCluster::PrematureStop),
+        (scores.tool_selection, FailureCluster::WrongTool),
+        (scores.instruction_adherence, FailureCluster::ConstraintBreach),
+    ];
+
+    candidates
+        .iter()
+        .min_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal))
+        .map(|(_, cluster)| cluster.clone())
+        .unwrap_or(FailureCluster::Unknown)
 }
 
 /// Detect if the agent entered a loop (many repeated LLM calls with no tool calls between them).

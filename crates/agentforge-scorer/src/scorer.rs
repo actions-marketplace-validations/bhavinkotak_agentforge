@@ -239,7 +239,11 @@ fn build_failure_cluster_summary(traces: &[Trace]) -> Vec<agentforge_core::Failu
 
     let failed_traces: Vec<&Trace> = traces
         .iter()
-        .filter(|t| t.status == TraceStatus::Fail || t.status == TraceStatus::Error)
+        .filter(|t| {
+            t.status == TraceStatus::Fail
+                || t.status == TraceStatus::Error
+                || t.status == TraceStatus::ReviewNeeded
+        })
         .collect();
 
     for trace in &failed_traces {
