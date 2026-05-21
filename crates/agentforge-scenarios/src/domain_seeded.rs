@@ -53,25 +53,33 @@ async fn generate_via_llm(
     let keyword_list = keywords.join(", ");
 
     let prompt = format!(
-        r#"Generate {count} realistic test scenarios for an AI agent with the following description:
+        r#"Generate {count} realistic test scenarios for an AI agent.
 
+Agent: {agent_name}
 Domain: {domain}
 Keywords: {keyword_list}
 Available tools: {tool_list}
 System prompt excerpt: {prompt_excerpt}
 
-For each scenario, generate a JSON object with:
-- "user_message": a realistic user request
-- "pass_criteria": what a good response looks like
-- "difficulty": one of "easy", "medium", "hard", "edge"
-- "expected_tools": list of tool names that should be called (can be empty)
+Rules:
+1. Write user_message as a real user would — describe the problem, never name a tool.
+2. Make each scenario concrete and specific to the domain (include file paths, tech stack, configs).
+3. Vary difficulty: include easy, medium, and at least one hard scenario.
+4. expected_tools must only contain names from the available tools list.
 
-Return a JSON array of scenario objects. Be realistic and domain-specific."#,
+Respond with ONLY a JSON array (no markdown, no explanation) where each element has:
+  "user_message": string
+  "pass_criteria": string describing what a correct response looks like
+  "difficulty": "easy" | "medium" | "hard" | "edge"
+  "expected_tools": array of tool name strings (can be empty)
+
+JSON array:"#,
         count = config.count,
+        agent_name = &agent.name,
         domain = domain,
         keyword_list = keyword_list,
         tool_list = tool_list,
-        prompt_excerpt = agent.system_prompt.chars().take(300).collect::<String>(),
+        prompt_excerpt = agent.system_prompt.chars().take(400).collect::<String>(),
     );
 
     let client = reqwest::Client::new();
@@ -82,11 +90,10 @@ Return a JSON array of scenario objects. Be realistic and domain-specific."#,
         .json(&serde_json::json!({
             "model": config.llm_model,
             "messages": [
-                {"role": "system", "content": "You are a test scenario generator. Always respond with valid JSON only."},
+                {"role": "system", "content": "You are a test scenario generator. Output only valid JSON with no markdown fences or extra text."},
                 {"role": "user", "content": prompt}
             ],
-            "temperature": 0.8,
-            "response_format": {"type": "json_object"}
+            "temperature": 0.7
         }))
         .send()
         .await
@@ -116,7 +123,10 @@ fn parse_llm_scenarios(
     agent: &AgentFile,
     config: &DomainSeededConfig,
 ) -> Result<Vec<Scenario>> {
-    let parsed: serde_json::Value = serde_json::from_str(content)
+    // Strip markdown code fences that some models add despite instructions not to
+    let json_str = strip_markdown_fences(content);
+
+    let parsed: serde_json::Value = serde_json::from_str(json_str)
         .map_err(|e| AgentForgeError::ParseError(format!("LLM returned invalid JSON: {e}")))?;
 
     // Handle both {"scenarios": [...]} and [...] formats
@@ -193,6 +203,18 @@ fn parse_llm_scenarios(
         .collect();
 
     Ok(scenarios)
+}
+
+/// Strip markdown code fences that some models add around JSON output.
+fn strip_markdown_fences(s: &str) -> &str {
+    let s = s.trim();
+    // Handle ```json ... ``` or ``` ... ```
+    if let Some(inner) = s.strip_prefix("```json").or_else(|| s.strip_prefix("```")) {
+        if let Some(end) = inner.rfind("```") {
+            return inner[..end].trim();
+        }
+    }
+    s
 }
 
 /// Heuristic domain scenario generation (no LLM required).

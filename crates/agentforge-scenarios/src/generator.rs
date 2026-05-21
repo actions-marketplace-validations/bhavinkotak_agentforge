@@ -52,8 +52,10 @@ pub async fn generate_scenarios(
     config: &ScenarioGeneratorConfig,
 ) -> Result<Vec<Scenario>> {
     let total = config.total_count as usize;
-    let schema_n = (total as f64 * config.schema_derived_ratio).round() as usize;
-    let adversarial_n = (total as f64 * config.adversarial_ratio).round() as usize;
+    // Use floor so that rounding never eats the domain-seeded budget entirely.
+    // With total=5: schema=2, adversarial=1, domain=2.
+    let schema_n = (total as f64 * config.schema_derived_ratio).floor() as usize;
+    let adversarial_n = (total as f64 * config.adversarial_ratio).floor() as usize;
     let domain_n = total.saturating_sub(schema_n + adversarial_n);
 
     tracing::info!(
