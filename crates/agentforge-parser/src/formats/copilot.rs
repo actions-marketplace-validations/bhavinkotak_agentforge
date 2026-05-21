@@ -141,17 +141,150 @@ fn parse_copilot_tools(frontmatter: &serde_json::Value) -> Vec<ToolDefinition> {
                 })
                 .unwrap_or_else(|| capability.clone());
 
+            let (description, parameters) = capability_schema(&capability, &display_name);
+
             ToolDefinition {
                 name: display_name,
-                description: format!("Copilot capability: {}", capability),
-                parameters: serde_json::json!({
-                    "type": "object",
-                    "properties": {},
-                    "x-copilot-capability": capability
-                }),
+                description,
+                parameters,
             }
         })
         .collect()
+}
+
+/// Return a (description, parameters JSON schema) pair for a Copilot capability string.
+///
+/// Provides meaningful parameter schemas so LLMs can actually call these tools during
+/// eval scenarios, rather than refusing because `properties: {}` signals no parameters.
+fn capability_schema(capability: &str, display_name: &str) -> (String, serde_json::Value) {
+    // Normalise to lowercase leaf for pattern matching
+    let leaf = display_name.to_lowercase();
+
+    match leaf.as_str() {
+        // GitHub API — flexible query/action parameter
+        "github" => (
+            "Interact with GitHub: search repositories, list files, read file contents, \
+             search code, list issues, pull requests, workflows, and other GitHub API operations."
+                .to_string(),
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "The GitHub operation or search query to perform \
+                                        (e.g. 'list workflow files in .github/workflows/', \
+                                        'search code for TODO', 'get file contents of README.md')."
+                    }
+                },
+                "required": ["query"],
+                "x-copilot-capability": capability
+            }),
+        ),
+
+        // File search
+        "filesearch" | "file_search" => (
+            "Search the repository for files matching a name pattern or glob.".to_string(),
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Filename pattern, glob, or partial path to search for \
+                                        (e.g. '*.yml', '.github/workflows/*.yml', 'Dockerfile')."
+                    }
+                },
+                "required": ["query"],
+                "x-copilot-capability": capability
+            }),
+        ),
+
+        // Codebase / semantic search
+        "codebase" | "search_codebase" | "searchcodebase" => (
+            "Semantically search the codebase for relevant code, functions, or patterns."
+                .to_string(),
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Natural-language or keyword search query to find \
+                                        relevant code in the workspace."
+                    }
+                },
+                "required": ["query"],
+                "x-copilot-capability": capability
+            }),
+        ),
+
+        // Read file
+        "readfile" | "read_file" => (
+            "Read the contents of a file in the repository.".to_string(),
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "file_path": {
+                        "type": "string",
+                        "description": "Relative path to the file to read \
+                                        (e.g. '.github/workflows/ci.yml')."
+                    }
+                },
+                "required": ["file_path"],
+                "x-copilot-capability": capability
+            }),
+        ),
+
+        // Edit / write files
+        "editfiles" | "edit_files" => (
+            "Create or edit one or more files in the repository.".to_string(),
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "file_path": {
+                        "type": "string",
+                        "description": "Relative path to the file to create or modify."
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "Full new content to write to the file."
+                    }
+                },
+                "required": ["file_path", "content"],
+                "x-copilot-capability": capability
+            }),
+        ),
+
+        // Run terminal command
+        "runinterminal" | "run_in_terminal" | "terminal" => (
+            "Execute a shell command in the project terminal.".to_string(),
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "command": {
+                        "type": "string",
+                        "description": "Shell command to run (e.g. 'actionlint .github/workflows/ci.yml')."
+                    }
+                },
+                "required": ["command"],
+                "x-copilot-capability": capability
+            }),
+        ),
+
+        // Fallback: generic single-input tool
+        _ => (
+            format!("Copilot capability: {capability}"),
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "input": {
+                        "type": "string",
+                        "description": format!("Input for the {display_name} capability.")
+                    }
+                },
+                "required": ["input"],
+                "x-copilot-capability": capability
+            }),
+        ),
+    }
 }
 
 #[cfg(test)]
@@ -178,6 +311,18 @@ mod tests {
         assert_eq!(agent.tools[0].name, "github");
         assert_eq!(agent.tools[1].name, "codebase");
         assert_eq!(agent.tools[2].name, "editFiles");
+        // Each tool must have at least one required parameter so models can call them
+        for tool in &agent.tools {
+            let props = tool
+                .parameters
+                .get("properties")
+                .and_then(|p| p.as_object());
+            assert!(
+                props.map(|p| !p.is_empty()).unwrap_or(false),
+                "Tool '{}' must have non-empty properties",
+                tool.name
+            );
+        }
     }
 
     #[test]

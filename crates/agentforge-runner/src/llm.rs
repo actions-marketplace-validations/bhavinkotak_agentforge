@@ -274,6 +274,24 @@ fn parse_openai_response(raw: serde_json::Value, latency_ms: u64) -> Result<LlmR
         // message as the final history entry without any tool results.
         .filter(|v| !v.is_empty());
 
+    // Fallback: some models (e.g. Llama 4 Maverick) emit tool calls as a JSON
+    // object in the `content` field instead of the structured `tool_calls`
+    // array.  Detect this format and convert it so the agentic loop works.
+    let tool_calls = if tool_calls.is_none() {
+        content
+            .as_deref()
+            .and_then(try_parse_text_tool_call)
+            .map(|tc| {
+                tracing::debug!(
+                    name = %tc[0].function.name,
+                    "Parsed text-encoded tool call from content field (model doesn't use tool_calls API)"
+                );
+                tc
+            })
+    } else {
+        tool_calls
+    };
+
     let input_tokens = raw["usage"]["prompt_tokens"].as_u64().unwrap_or(0) as u32;
     let output_tokens = raw["usage"]["completion_tokens"].as_u64().unwrap_or(0) as u32;
     let finish_reason = choice["finish_reason"]
@@ -297,6 +315,38 @@ fn parse_openai_response(raw: serde_json::Value, latency_ms: u64) -> Result<LlmR
         latency_ms,
         raw_response: raw,
     })
+}
+
+/// Try to parse a text-encoded tool call that some models (e.g. Llama 4
+/// Maverick) emit in the `content` field instead of using the structured
+/// `tool_calls` API.
+///
+/// Supported text format:
+/// ```json
+/// {"type": "function", "name": "toolName", "parameters": {...}}
+/// ```
+/// The `parameters` key is an alias for `arguments` used by certain models.
+fn try_parse_text_tool_call(content: &str) -> Option<Vec<ToolCall>> {
+    let v: serde_json::Value = serde_json::from_str(content.trim()).ok()?;
+    // Must be an object with `"type": "function"` and a non-empty `name`.
+    if v.get("type").and_then(|t| t.as_str()) != Some("function") {
+        return None;
+    }
+    let name = v.get("name").and_then(|n| n.as_str())?.to_string();
+    // Accept either `arguments` (OpenAI) or `parameters` (Llama 4).
+    let arguments = v
+        .get("arguments")
+        .or_else(|| v.get("parameters"))
+        .map(|a| match a {
+            serde_json::Value::String(s) => s.clone(),
+            other => other.to_string(),
+        })
+        .unwrap_or_else(|| "{}".to_string());
+    Some(vec![ToolCall {
+        id: uuid::Uuid::new_v4().to_string(),
+        tool_type: "function".to_string(),
+        function: ToolCallFunction { name, arguments },
+    }])
 }
 
 /// Anthropic Claude client.
