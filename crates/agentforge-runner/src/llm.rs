@@ -174,6 +174,10 @@ impl LlmClient for OpenAiClient {
         }
         if let Some(tools) = &request.tools {
             body["tools"] = serde_json::json!(tools);
+            // NVIDIA NIM only supports single tool calls per turn; disable parallel calls.
+            if self.provider == "nvidia" {
+                body["parallel_tool_calls"] = serde_json::json!(false);
+            }
         }
 
         let start = std::time::Instant::now();
