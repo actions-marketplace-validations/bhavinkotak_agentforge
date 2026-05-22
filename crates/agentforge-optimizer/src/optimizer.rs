@@ -297,6 +297,112 @@ mod tests {
         }
     }
 
+    #[test]
+    fn reorder_puts_never_constraints_first() {
+        let agent = make_agent();
+        let variant = reorder_instructions(&agent, "sha_test");
+        assert!(variant.agent.system_prompt.starts_with("CRITICAL RULES"));
+        assert!(variant.agent.system_prompt.contains("Never share"));
+    }
+
+    // ── reorder_instructions ─────────────────────────────────────────────────
+
+    #[test]
+    fn reorder_mutation_type_is_instruction_reorder() {
+        let agent = make_agent();
+        let variant = reorder_instructions(&agent, "abc");
+        assert_eq!(variant.mutation_type, MutationType::InstructionReorder);
+    }
+
+    #[test]
+    fn reorder_parent_sha_is_propagated() {
+        let agent = make_agent();
+        let sha = "test_sha_123";
+        let variant = reorder_instructions(&agent, sha);
+        assert_eq!(variant.parent_sha, sha);
+    }
+
+    #[test]
+    fn reorder_never_constraint_sorted_before_always() {
+        let mut agent = make_agent();
+        agent.constraints = vec![
+            "Always be polite.".to_string(),
+            "Never share PII.".to_string(),
+            "Always confirm before deleting.".to_string(),
+        ];
+        let variant = reorder_instructions(&agent, "sha");
+        // "Never share PII." should be first in constraints
+        assert!(variant.agent.constraints[0].to_lowercase().starts_with("never"),
+            "Never constraints must come first after reorder");
+    }
+
+    #[test]
+    fn reorder_no_crash_with_empty_constraints() {
+        let mut agent = make_agent();
+        agent.constraints = vec![];
+        // Should not panic
+        let variant = reorder_instructions(&agent, "sha");
+        // Without constraints, prompt should remain unchanged (no "CRITICAL RULES" prefix)
+        assert!(!variant.agent.system_prompt.starts_with("CRITICAL RULES"),
+            "With no constraints, system_prompt should not get CRITICAL RULES prefix");
+    }
+
+    #[test]
+    fn reorder_preserves_original_system_prompt_content() {
+        let agent = make_agent();
+        let original = agent.system_prompt.clone();
+        let variant = reorder_instructions(&agent, "sha");
+        assert!(variant.agent.system_prompt.contains(&original),
+            "Original system prompt must be preserved in reordered variant");
+    }
+
+    #[test]
+    fn reorder_description_is_non_empty() {
+        let agent = make_agent();
+        let variant = reorder_instructions(&agent, "sha");
+        assert!(!variant.description.is_empty());
+    }
+
+    // ── MutationType Display ──────────────────────────────────────────────────
+
+    #[test]
+    fn mutation_type_display_prompt_rewrite() {
+        assert_eq!(MutationType::PromptRewrite.to_string(), "prompt_rewrite");
+    }
+
+    #[test]
+    fn mutation_type_display_tool_description_rewrite() {
+        assert_eq!(
+            MutationType::ToolDescriptionRewrite.to_string(),
+            "tool_description_rewrite"
+        );
+    }
+
+    #[test]
+    fn mutation_type_display_output_schema_tighten() {
+        assert_eq!(
+            MutationType::OutputSchemaTighten.to_string(),
+            "output_schema_tighten"
+        );
+    }
+
+    #[test]
+    fn mutation_type_display_few_shot_injection() {
+        assert_eq!(MutationType::FewShotInjection.to_string(), "few_shot_injection");
+    }
+
+    #[test]
+    fn mutation_type_display_instruction_reorder() {
+        assert_eq!(MutationType::InstructionReorder.to_string(), "instruction_reorder");
+    }
+
+    #[test]
+    fn mutation_type_display_model_downgrade() {
+        assert_eq!(MutationType::ModelDowngrade.to_string(), "model_downgrade");
+    }
+
+    // ── generate_variants: deterministic (no LLM) ────────────────────────────
+
     #[tokio::test]
     async fn generates_at_least_min_variants() {
         let agent = make_agent();
@@ -338,11 +444,134 @@ mod tests {
         assert!(result.variants.len() <= 5);
     }
 
-    #[test]
-    fn reorder_puts_never_constraints_first() {
+    #[tokio::test]
+    async fn variants_have_non_empty_descriptions() {
         let agent = make_agent();
-        let variant = reorder_instructions(&agent, "sha_test");
-        assert!(variant.agent.system_prompt.starts_with("CRITICAL RULES"));
-        assert!(variant.agent.system_prompt.contains("Never share"));
+        let scorecard = make_scorecard(0.6, 0.5, 0.7, 0.7, 0.5, 0.5, 0.7);
+        let config = OptimizerConfig {
+            min_variants: 2,
+            max_variants: 5,
+            llm_api_key: "".to_string(),
+            ..Default::default()
+        };
+        let optimizer = Optimizer::new(config);
+        let result = optimizer
+            .generate_variants(&agent, &scorecard, &[], "sha_x")
+            .await
+            .unwrap();
+        for v in &result.variants {
+            assert!(!v.description.is_empty(), "Variant description must not be empty");
+        }
+    }
+
+    #[tokio::test]
+    async fn all_variants_have_correct_parent_sha() {
+        let agent = make_agent();
+        let scorecard = make_scorecard(0.6, 0.5, 0.7, 0.7, 0.5, 0.5, 0.7);
+        let config = OptimizerConfig {
+            min_variants: 3,
+            max_variants: 6,
+            llm_api_key: "".to_string(),
+            ..Default::default()
+        };
+        let optimizer = Optimizer::new(config);
+        let result = optimizer
+            .generate_variants(&agent, &scorecard, &[], "parent_sha_42")
+            .await
+            .unwrap();
+        for v in &result.variants {
+            assert_eq!(v.parent_sha, "parent_sha_42",
+                "All variants must reference the correct parent SHA");
+        }
+    }
+
+    #[tokio::test]
+    async fn all_variants_preserve_agent_name() {
+        let agent = make_agent();
+        let scorecard = make_scorecard(0.6, 0.5, 0.7, 0.7, 0.5, 0.5, 0.7);
+        let config = OptimizerConfig {
+            min_variants: 2,
+            max_variants: 5,
+            llm_api_key: "".to_string(),
+            ..Default::default()
+        };
+        let optimizer = Optimizer::new(config);
+        let result = optimizer
+            .generate_variants(&agent, &scorecard, &[], "sha")
+            .await
+            .unwrap();
+        for v in &result.variants {
+            assert_eq!(v.agent.name, "test-agent",
+                "Agent name must be preserved across variants");
+        }
+    }
+
+    #[tokio::test]
+    async fn low_task_completion_triggers_instruction_reorder_fallback() {
+        let agent = make_agent();
+        // Low task completion but no LLM key — should fall back to reorder
+        let scorecard = make_scorecard(0.5, 0.3, 0.8, 0.8, 0.3, 0.8, 0.8);
+        let config = OptimizerConfig {
+            min_variants: 1,
+            max_variants: 10,
+            llm_api_key: "".to_string(),
+            ..Default::default()
+        };
+        let optimizer = Optimizer::new(config);
+        let result = optimizer
+            .generate_variants(&agent, &scorecard, &[], "sha")
+            .await
+            .unwrap();
+        // At least one variant must be an InstructionReorder (the fallback)
+        let has_reorder = result.variants.iter()
+            .any(|v| v.mutation_type == MutationType::InstructionReorder);
+        assert!(has_reorder, "Without LLM, InstructionReorder fallback must be applied");
+    }
+
+    #[tokio::test]
+    async fn few_shot_injection_skipped_when_not_enough_traces() {
+        let agent = make_agent();
+        let scorecard = make_scorecard(0.6, 0.8, 0.8, 0.8, 0.8, 0.8, 0.8);
+        let config = OptimizerConfig {
+            min_variants: 2,
+            max_variants: 10,
+            llm_api_key: "".to_string(),
+            few_shot_min_traces: 50,  // requires 50 passing traces
+            ..Default::default()
+        };
+        let optimizer = Optimizer::new(config);
+        let result = optimizer
+            .generate_variants(&agent, &scorecard, &[], "sha")  // passing_traces = []
+            .await
+            .unwrap();
+        let has_few_shot = result.mutation_types_applied.iter()
+            .any(|m| *m == MutationType::FewShotInjection);
+        assert!(!has_few_shot, "FewShotInjection must not be applied when insufficient passing traces");
+    }
+
+    #[tokio::test]
+    async fn min_variants_satisfied_when_all_mutations_skipped() {
+        // Pass/high scores so no mutation conditions trigger
+        let agent = {
+            let mut a = make_agent();
+            a.tools = vec![];  // no tools → tool description rewrite skipped
+            a.output_schema = None;  // no schema → schema tighten skipped
+            a
+        };
+        let scorecard = make_scorecard(0.95, 0.95, 0.95, 0.95, 0.95, 0.95, 0.95);
+        let config = OptimizerConfig {
+            min_variants: 3,
+            max_variants: 10,
+            llm_api_key: "".to_string(),
+            few_shot_min_traces: 50,
+            ..Default::default()
+        };
+        let optimizer = Optimizer::new(config);
+        let result = optimizer
+            .generate_variants(&agent, &scorecard, &[], "sha")
+            .await
+            .unwrap();
+        assert!(result.variants.len() >= 3,
+            "min_variants must be satisfied even when no mutations apply");
     }
 }

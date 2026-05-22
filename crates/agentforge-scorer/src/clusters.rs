@@ -189,4 +189,250 @@ mod tests {
             FailureCluster::ConstraintBreach
         );
     }
+
+    // ── Regression: Fail trace must never get NoFailure ──────────────────────
+
+    #[test]
+    fn fail_trace_with_moderate_scores_never_gets_no_failure() {
+        let trace = make_empty_trace(TraceStatus::Fail);
+        // Moderate scores (30-70%) - these were the bug: old code returned Unknown
+        // but now should return a meaningful cluster via weakest-dimension fallback.
+        let scores = DimensionScores {
+            task_completion: 0.55,
+            tool_selection: 0.65,
+            argument_correctness: 0.70,
+            schema_compliance: 0.60,
+            instruction_adherence: 0.70,
+            path_efficiency: 0.75,
+        };
+        let cluster = classify_failure_cluster(&trace, &scores, &[]);
+        assert_ne!(cluster, FailureCluster::NoFailure,
+            "Fail trace must never get NoFailure cluster");
+    }
+
+    #[test]
+    fn review_needed_trace_never_gets_no_failure() {
+        let trace = make_empty_trace(TraceStatus::ReviewNeeded);
+        let scores = DimensionScores {
+            task_completion: 0.5,
+            tool_selection: 0.9,
+            argument_correctness: 0.9,
+            schema_compliance: 0.9,
+            instruction_adherence: 0.9,
+            path_efficiency: 0.9,
+        };
+        let cluster = classify_failure_cluster(&trace, &scores, &[]);
+        assert_ne!(cluster, FailureCluster::NoFailure,
+            "ReviewNeeded trace must never get NoFailure cluster");
+    }
+
+    // ── Weakest-dimension fallback tests ─────────────────────────────────────
+
+    #[test]
+    fn weakest_task_completion_yields_premature_stop() {
+        let trace = make_empty_trace(TraceStatus::Fail);
+        // task_completion is the weakest (0.3 < 0.6 < 0.7)
+        let scores = DimensionScores {
+            task_completion: 0.3,
+            tool_selection: 0.6,
+            argument_correctness: 0.7,
+            schema_compliance: 0.7,
+            instruction_adherence: 0.6,
+            path_efficiency: 0.5,
+        };
+        let cluster = classify_failure_cluster(&trace, &scores, &[]);
+        assert_eq!(cluster, FailureCluster::PrematureStop,
+            "Weakest task_completion should yield PrematureStop");
+    }
+
+    #[test]
+    fn weakest_tool_selection_yields_wrong_tool() {
+        let trace = make_empty_trace(TraceStatus::Fail);
+        let scores = DimensionScores {
+            task_completion: 0.6,
+            tool_selection: 0.3,
+            argument_correctness: 0.7,
+            schema_compliance: 0.7,
+            instruction_adherence: 0.6,
+            path_efficiency: 0.5,
+        };
+        let cluster = classify_failure_cluster(&trace, &scores, &[]);
+        assert_eq!(cluster, FailureCluster::WrongTool,
+            "Weakest tool_selection should yield WrongTool");
+    }
+
+    #[test]
+    fn weakest_instruction_adherence_yields_constraint_breach() {
+        let trace = make_empty_trace(TraceStatus::Fail);
+        let scores = DimensionScores {
+            task_completion: 0.6,
+            tool_selection: 0.6,
+            argument_correctness: 0.7,
+            schema_compliance: 0.7,
+            instruction_adherence: 0.2,
+            path_efficiency: 0.6,
+        };
+        let cluster = classify_failure_cluster(&trace, &scores, &[]);
+        assert_eq!(cluster, FailureCluster::ConstraintBreach,
+            "Weakest instruction_adherence should yield ConstraintBreach");
+    }
+
+    // ── Hard-failure priority tests ───────────────────────────────────────────
+
+    #[test]
+    fn schema_violation_beats_moderate_task_completion() {
+        let trace = make_empty_trace(TraceStatus::Fail);
+        // schema is below hard threshold even though task is also low
+        let scores = DimensionScores {
+            task_completion: 0.2,
+            tool_selection: 0.9,
+            argument_correctness: 0.9,
+            schema_compliance: 0.2,  // < 0.3
+            instruction_adherence: 0.9,
+            path_efficiency: 0.9,
+        };
+        assert_eq!(
+            classify_failure_cluster(&trace, &scores, &[]),
+            FailureCluster::SchemaViolation,
+            "Schema violation should take priority over weak task_completion"
+        );
+    }
+
+    #[test]
+    fn hallucinated_arg_beats_weak_dimensions() {
+        let trace = make_empty_trace(TraceStatus::Fail);
+        let scores = DimensionScores {
+            task_completion: 0.3,
+            tool_selection: 0.3,
+            argument_correctness: 0.1,  // < 0.3 hard threshold
+            schema_compliance: 0.9,
+            instruction_adherence: 0.3,
+            path_efficiency: 0.3,
+        };
+        assert_eq!(
+            classify_failure_cluster(&trace, &scores, &[]),
+            FailureCluster::HallucinatedArgument
+        );
+    }
+
+    // ── Keyword hint tests ────────────────────────────────────────────────────
+
+    #[test]
+    fn wrong_tool_keyword_triggers_cluster() {
+        let trace = make_empty_trace(TraceStatus::Fail);
+        let scores = make_scores(0.7, 0.9, 0.9, 0.9, 0.7);
+        assert_eq!(
+            classify_failure_cluster(&trace, &scores, &["wrong_tool".to_string()]),
+            FailureCluster::WrongTool
+        );
+    }
+
+    #[test]
+    fn missing_required_tools_keyword_triggers_wrong_tool() {
+        let trace = make_empty_trace(TraceStatus::Fail);
+        let scores = make_scores(0.7, 0.9, 0.9, 0.9, 0.7);
+        assert_eq!(
+            classify_failure_cluster(&trace, &scores, &["missing required tools".to_string()]),
+            FailureCluster::WrongTool
+        );
+    }
+
+    #[test]
+    fn argument_keyword_triggers_hallucinated_argument() {
+        let trace = make_empty_trace(TraceStatus::Fail);
+        let scores = make_scores(0.7, 0.9, 0.9, 0.9, 0.7);
+        assert_eq!(
+            classify_failure_cluster(&trace, &scores, &["argument mismatch".to_string()]),
+            FailureCluster::HallucinatedArgument
+        );
+    }
+
+    #[test]
+    fn constraint_keyword_triggers_constraint_breach() {
+        let trace = make_empty_trace(TraceStatus::Fail);
+        let scores = make_scores(0.7, 0.9, 0.9, 0.9, 0.7);
+        assert_eq!(
+            classify_failure_cluster(&trace, &scores, &["instruction adherence failed".to_string()]),
+            FailureCluster::ConstraintBreach
+        );
+    }
+
+    // ── Loop detection ────────────────────────────────────────────────────────
+
+    #[test]
+    fn many_llm_calls_few_tools_triggers_looping() {
+        let mut trace = make_empty_trace(TraceStatus::Fail);
+        use agentforge_core::{LlmCallStep, TraceStep};
+        use chrono::Utc;
+        for i in 0..6 {
+            trace.steps.push(TraceStep::LlmCall(LlmCallStep {
+                index: i,
+                model: "gpt-4o".to_string(),
+                messages: vec![],
+                response: serde_json::json!({}),
+                input_tokens: 50,
+                output_tokens: 20,
+                latency_ms: 500,
+                timestamp: Utc::now(),
+            }));
+        }
+        // Only one tool call — satisfies loop heuristic (>5 LLM, <=1 tool)
+        use agentforge_core::{ToolCallStep, TraceStep as TS};
+        trace.steps.push(TS::ToolCall(ToolCallStep {
+            index: 6,
+            tool_name: "search".to_string(),
+            call_id: "c1".to_string(),
+            arguments: serde_json::json!({}),
+            timestamp: Utc::now(),
+        }));
+        let scores = make_scores(0.5, 0.5, 0.9, 0.9, 0.2);
+        assert_eq!(
+            classify_failure_cluster(&trace, &scores, &[]),
+            FailureCluster::Looping
+        );
+    }
+
+    #[test]
+    fn few_llm_calls_does_not_trigger_looping() {
+        let mut trace = make_empty_trace(TraceStatus::Fail);
+        use agentforge_core::{LlmCallStep, TraceStep};
+        use chrono::Utc;
+        for i in 0..3 {
+            trace.steps.push(TraceStep::LlmCall(LlmCallStep {
+                index: i,
+                model: "gpt-4o".to_string(),
+                messages: vec![],
+                response: serde_json::json!({}),
+                input_tokens: 50,
+                output_tokens: 20,
+                latency_ms: 500,
+                timestamp: Utc::now(),
+            }));
+        }
+        let scores = make_scores(0.5, 0.5, 0.9, 0.9, 0.2);
+        assert_ne!(
+            classify_failure_cluster(&trace, &scores, &[]),
+            FailureCluster::Looping
+        );
+    }
+
+    // ── Path efficiency hard threshold ────────────────────────────────────────
+
+    #[test]
+    fn very_low_path_efficiency_is_premature_stop() {
+        let trace = make_empty_trace(TraceStatus::Fail);
+        // path_efficiency < 0.1 hard threshold
+        let scores = DimensionScores {
+            task_completion: 0.7,
+            tool_selection: 0.7,
+            argument_correctness: 0.9,
+            schema_compliance: 0.9,
+            instruction_adherence: 0.7,
+            path_efficiency: 0.05,
+        };
+        assert_eq!(
+            classify_failure_cluster(&trace, &scores, &[]),
+            FailureCluster::PrematureStop
+        );
+    }
 }

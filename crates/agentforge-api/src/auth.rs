@@ -104,6 +104,7 @@ mod tests {
             db,
             llm_client: Arc::new(StubLlmClient),
             scorer_config: agentforge_scorer::ScorerConfig::default(),
+            optimizer_config: agentforge_optimizer::OptimizerConfig::default(),
             gatekeeper_config: agentforge_gatekeeper::GatekeeperConfig::default(),
             trace_exporter: Arc::new(agentforge_observability::NoopExporter),
             active_runs: Arc::new(AtomicI64::new(0)),

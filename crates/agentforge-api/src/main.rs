@@ -4,6 +4,7 @@ use agentforge_api::{router, AppState};
 use agentforge_db::create_pool;
 use agentforge_gatekeeper::GatekeeperConfig;
 use agentforge_observability::build_exporter;
+use agentforge_optimizer::OptimizerConfig;
 use agentforge_runner::{AnthropicClient, LlmClient, NvidiaClient, OpenAiClient};
 use agentforge_scorer::ScorerConfig;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
@@ -73,6 +74,16 @@ async fn main() -> anyhow::Result<()> {
     let trace_exporter: Arc<dyn agentforge_observability::TraceExporter> =
         Arc::from(build_exporter());
 
+    // Optimizer uses the same judge LLM (prompt rewrites need a capable model)
+    let optimizer_config = OptimizerConfig {
+        llm_base_url: scorer_config.judge_base_url.clone(),
+        llm_api_key: scorer_config.judge_api_key.clone(),
+        llm_model: scorer_config.judge_model.clone(),
+        min_variants: 3,
+        max_variants: 5,
+        few_shot_min_traces: 3, // lower bar so we actually use passing traces
+    };
+
     let max_concurrent_runs: i64 = std::env::var("AGENTFORGE_MAX_CONCURRENT_RUNS")
         .ok()
         .and_then(|v| v.parse().ok())
@@ -94,6 +105,7 @@ async fn main() -> anyhow::Result<()> {
         db,
         llm_client,
         scorer_config,
+        optimizer_config,
         gatekeeper_config,
         trace_exporter,
         active_runs: Arc::new(std::sync::atomic::AtomicI64::new(0)),

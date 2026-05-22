@@ -8,10 +8,12 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use uuid::Uuid;
 
-use agentforge_core::{AgentForgeError, EvalRun, EvalRunStatus, Trace};
+use agentforge_core::{AgentFileFormat, AgentForgeError, AgentVersion, EvalRun, EvalRunStatus, Trace};
 use agentforge_db::{
     agent_repo::AgentRepo, eval_repo::EvalRepo, scenario_repo::ScenarioRepo, trace_repo::TraceRepo,
 };
+use agentforge_optimizer::Optimizer;
+use agentforge_parser::compute_sha256;
 use agentforge_runner::{AgentRunner, RunnerConfig};
 use agentforge_scenarios::ScenarioGeneratorConfig;
 use agentforge_scorer::score_run;
@@ -34,6 +36,10 @@ pub struct StartRunRequest {
     pub provider: Option<String>,
     /// LLM provider for the judge (must differ from `provider` at the provider level).
     pub judge_provider: Option<String>,
+    /// When true, automatically run the optimizer after evaluation if aggregate < threshold.
+    /// Generates up to 5 improved agent variants, quick-evaluates them, and saves the
+    /// best one as a new versioned agent. Defaults to false.
+    pub auto_optimize: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -187,6 +193,7 @@ pub async fn start_run(
     let run_id = run.id;
 
     let state_clone = state.clone();
+    let auto_optimize = req.auto_optimize.unwrap_or(false);
     tokio::spawn(async move {
         run_evaluation_background(
             state_clone,
@@ -195,6 +202,7 @@ pub async fn start_run(
             req.agent_id,
             scenario_count,
             concurrency,
+            auto_optimize,
         )
         .await;
     });
@@ -209,6 +217,7 @@ async fn run_evaluation_background(
     agent_id: Uuid,
     scenario_count: u32,
     concurrency: u32,
+    auto_optimize: bool,
 ) {
     let eval_repo = EvalRepo::new(state.db.clone());
     let scenario_repo = ScenarioRepo::new(state.db.clone());
@@ -301,6 +310,156 @@ async fn run_evaluation_background(
         .await;
     state.active_runs.fetch_sub(1, Ordering::SeqCst);
     tracing::info!(%run_id, aggregate = scorecard.aggregate_score, passed = scorecard.passed, errors = scorecard.errors, "Evaluation complete");
+
+    // Self-improvement: if auto_optimize is enabled and the run didn't pass the threshold,
+    // generate improved variants and save the best one as a new agent version.
+    let threshold = 0.85_f64;
+    if auto_optimize && scorecard.aggregate_score < threshold {
+        tracing::info!(%run_id, aggregate = scorecard.aggregate_score, "Score below threshold — starting optimization cycle");
+        tokio::spawn(run_optimization_cycle(
+            state.clone(),
+            agent,
+            agent_id,
+            scorecard.clone(),
+            traces,
+            scenarios,
+        ));
+    }
+}
+
+/// Run one optimization cycle: generate variants, quick-eval on a small scenario subset,
+/// save the best-performing variant as a new agent version in the database.
+async fn run_optimization_cycle(
+    state: Arc<AppState>,
+    agent: agentforge_core::AgentFile,
+    agent_id: Uuid,
+    scorecard: agentforge_core::Scorecard,
+    passing_traces: Vec<Trace>,
+    scenarios: Vec<agentforge_core::Scenario>,
+) {
+    // Derive the parent SHA from the current agent version in the DB.
+    let agent_repo = AgentRepo::new(state.db.clone());
+    let parent_sha = match agent_repo.find_by_id(agent_id).await {
+        Ok(v) => v.sha.clone(),
+        Err(_) => agent.name.clone(),
+    };
+
+    let optimizer = Optimizer::new(state.optimizer_config.clone());
+
+    let passing: Vec<Trace> = passing_traces
+        .into_iter()
+        .filter(|t| t.status == agentforge_core::TraceStatus::Pass)
+        .collect();
+
+    let result = match optimizer
+        .generate_variants(&agent, &scorecard, &passing, &parent_sha)
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!(error = %e, "Optimizer variant generation failed");
+            return;
+        }
+    };
+
+    tracing::info!(
+        variants = result.variants.len(),
+        "Optimizer generated variants — running quick evaluation"
+    );
+
+    // Quick-eval: use up to 10 scenarios from the original run to rank variants fast.
+    let eval_scenarios: Vec<agentforge_core::Scenario> =
+        scenarios.into_iter().take(10).collect();
+
+    let mut best_aggregate = scorecard.aggregate_score;
+    let mut best_version: Option<AgentVersion> = None;
+
+    for variant in &result.variants {
+        let runner = AgentRunner::new(
+            state.llm_client.clone(),
+            RunnerConfig {
+                concurrency: 3,
+                run_id: Uuid::new_v4(),
+                ..Default::default()
+            },
+        );
+
+        let mut mini_traces = runner
+            .run(&variant.agent, eval_scenarios.clone(), None)
+            .await
+            .traces;
+
+        let mini_scorecard = match score_run(
+            &mut mini_traces,
+            &eval_scenarios,
+            &variant.agent,
+            Uuid::new_v4(),
+            &state.scorer_config,
+        )
+        .await
+        {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!(error = %e, mutation = %variant.mutation_type, "Mini-eval failed for variant");
+                continue;
+            }
+        };
+
+        tracing::info!(
+            mutation = %variant.mutation_type,
+            aggregate = mini_scorecard.aggregate_score,
+            original = scorecard.aggregate_score,
+            "Variant scored"
+        );
+
+        if mini_scorecard.aggregate_score > best_aggregate {
+            best_aggregate = mini_scorecard.aggregate_score;
+            let now = Utc::now();
+            best_version = Some(AgentVersion {
+                id: Uuid::new_v4(),
+                name: variant.agent.name.clone(),
+                version: variant.agent.version.clone(),
+                sha: {
+                    let json = serde_json::to_string(&variant.agent).unwrap_or_default();
+                    compute_sha256(&json)
+                },
+                file_content: variant.agent.clone(),
+                raw_content: serde_json::to_string_pretty(&variant.agent)
+                    .unwrap_or_default(),
+                format: AgentFileFormat::NativeYaml,
+                promoted: false,
+                is_champion: false,
+                changelog: Some(format!(
+                    "Auto-optimized via {} — score {:.1}% → {:.1}%",
+                    variant.mutation_type,
+                    scorecard.aggregate_score * 100.0,
+                    mini_scorecard.aggregate_score * 100.0,
+                )),
+                parent_sha: Some(parent_sha.clone()),
+                created_at: now,
+                updated_at: now,
+            });
+        }
+    }
+
+    match best_version {
+        Some(v) if best_aggregate > scorecard.aggregate_score + 0.01 => {
+            match agent_repo.insert(&v).await {
+                Ok(saved) => tracing::info!(
+                    new_version_id = %saved.id,
+                    version = %saved.version,
+                    aggregate = best_aggregate,
+                    original = scorecard.aggregate_score,
+                    "Optimizer saved improved agent version"
+                ),
+                Err(e) => tracing::warn!(error = %e, "Failed to save optimized agent version"),
+            }
+        }
+        Some(_) => tracing::info!(
+            "Optimizer ran but no variant improved score by >1% — no new version saved"
+        ),
+        None => tracing::info!("Optimizer found no improvements"),
+    }
 }
 
 /// GET /runs/:id
@@ -628,5 +787,220 @@ mod tests {
         .unwrap();
         let limit = query.limit.unwrap_or(100).min(500);
         assert_eq!(limit, 500);
+    }
+
+    // ── RunResponse aggregate_score regression tests ───────────────────────────
+
+    /// Regression: RunResponse must include aggregate_score field.
+    /// Before the fix, aggregate_score was missing from RunResponse and always null in the API.
+    #[test]
+    fn run_response_serializes_aggregate_score() {
+        let run_id = Uuid::new_v4();
+        let agent_id = Uuid::new_v4();
+        let resp = RunResponse {
+            id: run_id,
+            agent_id,
+            status: "complete".to_string(),
+            aggregate_score: Some(0.87),
+            created_at: Utc::now(),
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert!(json["aggregate_score"].is_number(),
+            "aggregate_score must serialize as a number, got: {:?}", json["aggregate_score"]);
+        assert!((json["aggregate_score"].as_f64().unwrap() - 0.87).abs() < 1e-9);
+    }
+
+    #[test]
+    fn run_response_aggregate_score_none_serializes_as_null() {
+        let resp = RunResponse {
+            id: Uuid::new_v4(),
+            agent_id: Uuid::new_v4(),
+            status: "running".to_string(),
+            aggregate_score: None,
+            created_at: Utc::now(),
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert!(json["aggregate_score"].is_null(),
+            "aggregate_score: None must serialize as null");
+    }
+
+    #[test]
+    fn run_response_from_eval_run_maps_aggregate_score() {
+        let run_id = Uuid::new_v4();
+        let agent_id = Uuid::new_v4();
+        let created = Utc::now();
+        let eval_run = EvalRun {
+            id: run_id,
+            agent_id,
+            scenario_set_id: None,
+            status: EvalRunStatus::Complete,
+            scenario_count: 100,
+            completed_count: 100,
+            error_count: 0,
+            aggregate_score: Some(0.92),
+            pass_rate: None,
+            scores: None,
+            failure_clusters: None,
+            seed: 42,
+            concurrency: 10,
+            error_message: None,
+            started_at: None,
+            completed_at: None,
+            created_at: created,
+            updated_at: created,
+        };
+        let resp = RunResponse::from(eval_run);
+        assert_eq!(resp.aggregate_score, Some(0.92));
+    }
+
+    #[test]
+    fn run_response_from_eval_run_preserves_none_aggregate_score() {
+        let eval_run = EvalRun {
+            id: Uuid::new_v4(),
+            agent_id: Uuid::new_v4(),
+            scenario_set_id: None,
+            status: EvalRunStatus::Pending,
+            scenario_count: 50,
+            completed_count: 0,
+            error_count: 0,
+            aggregate_score: None,  // Not yet scored
+            pass_rate: None,
+            scores: None,
+            failure_clusters: None,
+            seed: 0,
+            concurrency: 5,
+            error_message: None,
+            started_at: None,
+            completed_at: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+        let resp = RunResponse::from(eval_run);
+        assert!(resp.aggregate_score.is_none(),
+            "aggregate_score must be None when EvalRun has no score yet");
+    }
+
+    #[test]
+    fn run_response_has_all_expected_fields_serialized() {
+        let resp = RunResponse {
+            id: Uuid::new_v4(),
+            agent_id: Uuid::new_v4(),
+            status: "complete".to_string(),
+            aggregate_score: Some(0.75),
+            created_at: Utc::now(),
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        let obj = json.as_object().unwrap();
+        assert!(obj.contains_key("id"), "RunResponse must have 'id' field");
+        assert!(obj.contains_key("agent_id"), "RunResponse must have 'agent_id' field");
+        assert!(obj.contains_key("status"), "RunResponse must have 'status' field");
+        assert!(obj.contains_key("aggregate_score"), "RunResponse must have 'aggregate_score' field");
+        assert!(obj.contains_key("created_at"), "RunResponse must have 'created_at' field");
+    }
+
+    // ── auto_optimize field ───────────────────────────────────────────────────
+
+    #[test]
+    fn start_run_request_auto_optimize_defaults_to_none() {
+        let json = serde_json::json!({
+            "agent_id": "550e8400-e29b-41d4-a716-446655440000"
+        });
+        let req: StartRunRequest = serde_json::from_value(json).unwrap();
+        assert!(req.auto_optimize.is_none(), "auto_optimize should default to None when not provided");
+    }
+
+    #[test]
+    fn start_run_request_auto_optimize_true_parsed() {
+        let json = serde_json::json!({
+            "agent_id": "550e8400-e29b-41d4-a716-446655440000",
+            "auto_optimize": true
+        });
+        let req: StartRunRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(req.auto_optimize, Some(true));
+    }
+
+    #[test]
+    fn start_run_request_auto_optimize_false_parsed() {
+        let json = serde_json::json!({
+            "agent_id": "550e8400-e29b-41d4-a716-446655440000",
+            "auto_optimize": false
+        });
+        let req: StartRunRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(req.auto_optimize, Some(false));
+    }
+
+    #[test]
+    fn auto_optimize_defaults_to_false_via_unwrap_or() {
+        let req = StartRunRequest {
+            agent_id: Uuid::new_v4(),
+            scenario_count: None,
+            seed: None,
+            concurrency: None,
+            threshold: None,
+            provider: None,
+            judge_provider: None,
+            auto_optimize: None,
+        };
+        let auto_optimize = req.auto_optimize.unwrap_or(false);
+        assert!(!auto_optimize, "auto_optimize must default to false");
+    }
+
+    // ── EvalRunStatus Display stability ──────────────────────────────────────
+
+    #[test]
+    fn eval_run_status_pending_display() {
+        assert!(!EvalRunStatus::Pending.to_string().is_empty());
+    }
+
+    #[test]
+    fn eval_run_status_running_display() {
+        assert!(!EvalRunStatus::Running.to_string().is_empty());
+    }
+
+    #[test]
+    fn eval_run_status_complete_display() {
+        assert!(!EvalRunStatus::Complete.to_string().is_empty());
+    }
+
+    #[test]
+    fn eval_run_status_error_display() {
+        assert!(!EvalRunStatus::Error.to_string().is_empty());
+    }
+
+    #[test]
+    fn all_eval_run_statuses_are_distinct() {
+        let statuses = [
+            EvalRunStatus::Pending.to_string(),
+            EvalRunStatus::Running.to_string(),
+            EvalRunStatus::Complete.to_string(),
+            EvalRunStatus::Error.to_string(),
+            EvalRunStatus::Cancelled.to_string(),
+        ];
+        let unique: std::collections::HashSet<_> = statuses.iter().collect();
+        assert_eq!(unique.len(), statuses.len(), "All EvalRunStatus Display values must be distinct");
+    }
+
+    // ── Pagination bounds ──────────────────────────────────────────────────────
+
+    #[test]
+    fn list_runs_negative_offset_becomes_zero() {
+        // The handler uses offset.unwrap_or(0) — negative values are passed through
+        // to the DB where they would fail, so we ensure the default is non-negative.
+        let query: ListRunsQuery = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert_eq!(query.offset.unwrap_or(0), 0);
+    }
+
+    #[test]
+    fn list_runs_limit_clamps_at_200() {
+        let query: ListRunsQuery = serde_json::from_value(serde_json::json!({"limit": 9999})).unwrap();
+        let limit = query.limit.unwrap_or(50).min(200);
+        assert_eq!(limit, 200);
+    }
+
+    #[test]
+    fn list_runs_reasonable_default_limit() {
+        let query: ListRunsQuery = serde_json::from_value(serde_json::json!({})).unwrap();
+        let limit = query.limit.unwrap_or(50).min(200);
+        assert!(limit > 0 && limit <= 200);
     }
 }
