@@ -420,14 +420,127 @@ fn error_trace(
 /// Simulate tool execution — returns a plausible result.
 /// In production, tools would be real API calls or stubs provided by the user.
 fn simulate_tool_result(tool_name: &str, args: &serde_json::Value) -> serde_json::Value {
-    // Return a generic success result shaped to match common tool outputs
+    let query = args
+        .get("query")
+        .or_else(|| args.get("input"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let file_path = args
+        .get("file_path")
+        .and_then(|v| v.as_str())
+        .unwrap_or(".github/workflows/ci.yml");
+    let command = args
+        .get("command")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let name_lower = tool_name.to_lowercase();
+
+    // GitHub search/API
+    if name_lower.contains("github") {
+        return serde_json::json!({
+            "results": [
+                {
+                    "path": ".github/workflows/ci.yml",
+                    "repository": "owner/repo",
+                    "content": "name: CI\non:\n  push:\n    branches: [main]\n  pull_request:\n    branches: [main]\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n      - uses: actions/setup-node@v4\n        with:\n          node-version: '20'\n      - run: npm ci\n      - run: npm test",
+                    "url": "https://github.com/owner/repo/blob/main/.github/workflows/ci.yml"
+                },
+                {
+                    "path": ".github/workflows/deploy.yml",
+                    "repository": "owner/repo",
+                    "content": "name: Deploy\non:\n  push:\n    branches: [main]\njobs:\n  deploy:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n      - run: npm ci && npm run build\n      - uses: peaceiris/actions-gh-pages@v3\n        with:\n          github_token: ${{ secrets.GITHUB_TOKEN }}\n          publish_dir: ./dist",
+                    "url": "https://github.com/owner/repo/blob/main/.github/workflows/deploy.yml"
+                }
+            ],
+            "total_count": 2,
+            "query": query
+        });
+    }
+
+    // File search
+    if name_lower.contains("filesearch") || (name_lower.contains("search") && name_lower.contains("file")) {
+        return serde_json::json!({
+            "files": [
+                ".github/workflows/ci.yml",
+                ".github/workflows/deploy.yml",
+                ".github/workflows/release.yml",
+                "package.json",
+                "README.md"
+            ],
+            "query": query
+        });
+    }
+
+    // Codebase / semantic search
+    if name_lower.contains("codebase") || name_lower.contains("searchcodebase") {
+        return serde_json::json!({
+            "matches": [
+                {
+                    "file": ".github/workflows/ci.yml",
+                    "snippet": "on:\n  push:\n    branches: [main]\n  pull_request:",
+                    "line": 2
+                },
+                {
+                    "file": "package.json",
+                    "snippet": "\"scripts\": {\n  \"test\": \"jest\",\n  \"build\": \"tsc\"\n}",
+                    "line": 5
+                }
+            ],
+            "query": query
+        });
+    }
+
+    // Read file
+    if name_lower.contains("readfile") || name_lower.contains("read") {
+        let content = if file_path.contains("ci.yml") || file_path.contains("workflow") {
+            "name: CI\non:\n  push:\n    branches: [main]\n  pull_request:\n    branches: [main]\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n      - uses: actions/setup-node@v4\n        with:\n          node-version: '20'\n          cache: 'npm'\n      - run: npm ci\n      - run: npm run lint\n      - run: npm test\n      - run: npm run build"
+        } else if file_path.contains("package.json") {
+            "{\n  \"name\": \"my-app\",\n  \"version\": \"1.0.0\",\n  \"scripts\": {\n    \"build\": \"tsc\",\n    \"test\": \"jest --coverage\",\n    \"lint\": \"eslint src/\"\n  },\n  \"engines\": { \"node\": \">=18\" }\n}"
+        } else {
+            "# My Project\n\nThis project uses GitHub Actions for CI/CD.\n\n## Workflows\n- `ci.yml` — runs tests on every PR\n- `deploy.yml` — deploys to production on merge to main"
+        };
+        return serde_json::json!({
+            "path": file_path,
+            "content": content,
+            "exists": true
+        });
+    }
+
+    // Edit files
+    if name_lower.contains("editfiles") || name_lower.contains("edit") {
+        return serde_json::json!({
+            "status": "success",
+            "path": file_path,
+            "message": format!("File '{}' updated successfully", file_path),
+            "lines_changed": 12
+        });
+    }
+
+    // Run in terminal
+    if name_lower.contains("terminal") || name_lower.contains("run") {
+        let output = if command.contains("npm") || command.contains("yarn") {
+            "added 847 packages in 12s\n✓ All tests passed (24 suites, 156 tests)"
+        } else if command.contains("git") {
+            "On branch main\nYour branch is up to date with 'origin/main'.\nnothing to commit, working tree clean"
+        } else if command.contains("gh") || command.contains("act") {
+            "✓ Run .github/workflows/ci.yml\n  ✓ build (ubuntu-latest)\n    ✓ Checkout code\n    ✓ Set up Node.js 20\n    ✓ npm ci\n    ✓ npm test\nAll jobs passed."
+        } else {
+            "Command completed successfully with exit code 0."
+        };
+        return serde_json::json!({
+            "stdout": output,
+            "stderr": "",
+            "exit_code": 0,
+            "command": command
+        });
+    }
+
+    // Generic fallback — still provide structured content
     serde_json::json!({
         "tool": tool_name,
         "status": "success",
-        "result": {
-            "message": format!("Tool '{}' executed successfully", tool_name),
-            "args_received": args
-        }
+        "result": format!("Executed '{}' with args: {}", tool_name, args),
+        "args_received": args
     })
 }
 
