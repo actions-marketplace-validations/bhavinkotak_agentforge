@@ -103,7 +103,11 @@ JSON array:"#,
         .await
         .map_err(|e| AgentForgeError::HttpError(e.to_string()))?;
 
-    let provider = if base_url.contains("nvidia") { "nvidia" } else { "openai" };
+    let provider = if base_url.contains("nvidia") {
+        "nvidia"
+    } else {
+        "openai"
+    };
     if !response.status().is_success() {
         return Err(AgentForgeError::LlmError {
             provider: provider.to_string(),

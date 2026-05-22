@@ -1,7 +1,7 @@
 import { useState } from 'react'
-import { useParams, useNavigate } from 'react-router-dom'
+import { useParams, useNavigate, Link } from 'react-router-dom'
 import { useQuery, useMutation } from '@tanstack/react-query'
-import { Shield, FileDown } from 'lucide-react'
+import { Shield, FileDown, GitCompare } from 'lucide-react'
 import { fetchRun, fetchScorecard, promoteRun } from '@/api/runs'
 import { startExport } from '@/api/finetune'
 import { ApiError } from '@/api/client'
@@ -88,7 +88,15 @@ export function RunDetailPage() {
       >
         {run && (
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 text-sm">
-            <Meta label="Agent ID" value={run.agent_id.slice(0, 8) + '…'} />
+            <div>
+              <p className="text-xs text-gray-500">Agent</p>
+              <Link
+                to={`/agents/${run.agent_id}`}
+                className="mt-0.5 block font-mono text-sm font-medium text-blue-600 hover:underline"
+              >
+                {run.agent_id.slice(0, 8)}…
+              </Link>
+            </div>
             <Meta label="Created" value={fmtDate(run.created_at)} />
             <Meta label="Status" value={run.status} />
           </div>
@@ -113,6 +121,13 @@ export function RunDetailPage() {
               <Button onClick={handlePromote} loading={promoteMut.isPending}>
                 <Shield className="h-4 w-4" />
                 Promote Agent
+              </Button>
+              <Button
+                variant="outline"
+                onClick={() => navigate(`/diff?v1=${run?.agent_id}`)}
+              >
+                <GitCompare className="h-4 w-4" />
+                Diff Agent
               </Button>
               <Button
                 variant="outline"

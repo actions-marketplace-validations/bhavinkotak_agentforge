@@ -38,6 +38,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/runs/{id}/scorecard", get(routes::runs::get_scorecard))
         .route("/runs/{id}/traces", get(routes::runs::list_traces))
         .route("/runs/{id}/progress", get(routes::runs::run_progress))
+        .route("/agents/{id}/runs", get(routes::runs::list_runs_for_agent))
         // Diff and promote
         .route("/diff", get(routes::diff::get_diff))
         .route("/promote/{run_id}", post(routes::promote::promote_run))

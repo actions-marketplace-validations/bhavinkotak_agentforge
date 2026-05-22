@@ -62,6 +62,10 @@ pub struct RunResponse {
     pub agent_id: Uuid,
     pub status: String,
     pub aggregate_score: Option<f64>,
+    pub pass_rate: Option<f64>,
+    pub scenario_count: u32,
+    pub completed_count: u32,
+    pub error_count: u32,
     pub created_at: chrono::DateTime<chrono::Utc>,
 }
 
@@ -72,6 +76,10 @@ impl From<EvalRun> for RunResponse {
             agent_id: r.agent_id,
             status: r.status.to_string(),
             aggregate_score: r.aggregate_score,
+            pass_rate: r.pass_rate,
+            scenario_count: r.scenario_count,
+            completed_count: r.completed_count,
+            error_count: r.error_count,
             created_at: r.created_at,
         }
     }
@@ -87,6 +95,21 @@ pub async fn list_runs(
     let offset = params.offset.unwrap_or(0);
     let runs = eval_repo
         .list_all(limit, offset)
+        .await
+        .map_err(|e| ApiError::internal(e.to_string()))?;
+    Ok(Json(runs.into_iter().map(Into::into).collect()))
+}
+
+/// GET /agents/:id/runs — list completed eval runs for a specific agent, newest first.
+pub async fn list_runs_for_agent(
+    State(state): State<Arc<AppState>>,
+    Path(agent_id): Path<Uuid>,
+    Query(params): Query<ListRunsQuery>,
+) -> ApiResult<Json<Vec<RunResponse>>> {
+    let eval_repo = EvalRepo::new(state.db.clone());
+    let limit = params.limit.unwrap_or(20).min(200);
+    let runs = eval_repo
+        .list_by_agent(agent_id, limit)
         .await
         .map_err(|e| ApiError::internal(e.to_string()))?;
     Ok(Json(runs.into_iter().map(Into::into).collect()))
@@ -812,6 +835,10 @@ mod tests {
             agent_id,
             status: "complete".to_string(),
             aggregate_score: Some(0.87),
+            pass_rate: Some(0.80),
+            scenario_count: 10,
+            completed_count: 9,
+            error_count: 1,
             created_at: Utc::now(),
         };
         let json = serde_json::to_value(&resp).unwrap();
@@ -830,6 +857,10 @@ mod tests {
             agent_id: Uuid::new_v4(),
             status: "running".to_string(),
             aggregate_score: None,
+            pass_rate: None,
+            scenario_count: 5,
+            completed_count: 0,
+            error_count: 0,
             created_at: Utc::now(),
         };
         let json = serde_json::to_value(&resp).unwrap();
@@ -904,6 +935,10 @@ mod tests {
             agent_id: Uuid::new_v4(),
             status: "complete".to_string(),
             aggregate_score: Some(0.75),
+            pass_rate: Some(0.60),
+            scenario_count: 5,
+            completed_count: 5,
+            error_count: 0,
             created_at: Utc::now(),
         };
         let json = serde_json::to_value(&resp).unwrap();
@@ -1039,5 +1074,255 @@ mod tests {
         let query: ListRunsQuery = serde_json::from_value(serde_json::json!({})).unwrap();
         let limit = query.limit.unwrap_or(50).min(200);
         assert!(limit > 0 && limit <= 200);
+    }
+
+    // ── 22 new tests ─────────────────────────────────────────────────────────
+
+    // ── RunResponse new fields ────────────────────────────────────────────────
+
+    #[test]
+    fn run_response_new_fields_serialized() {
+        let resp = RunResponse {
+            id: Uuid::new_v4(),
+            agent_id: Uuid::new_v4(),
+            status: "complete".to_string(),
+            aggregate_score: Some(0.80),
+            pass_rate: Some(0.60),
+            scenario_count: 5,
+            completed_count: 4,
+            error_count: 1,
+            created_at: Utc::now(),
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert!(json["pass_rate"].is_number());
+        assert_eq!(json["scenario_count"], 5);
+        assert_eq!(json["completed_count"], 4);
+        assert_eq!(json["error_count"], 1);
+    }
+
+    #[test]
+    fn run_response_pass_rate_none_serializes_null() {
+        let resp = RunResponse {
+            id: Uuid::new_v4(),
+            agent_id: Uuid::new_v4(),
+            status: "running".to_string(),
+            aggregate_score: None,
+            pass_rate: None,
+            scenario_count: 10,
+            completed_count: 3,
+            error_count: 0,
+            created_at: Utc::now(),
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert!(json["pass_rate"].is_null());
+        assert_eq!(json["scenario_count"], 10);
+    }
+
+    #[test]
+    fn run_response_from_eval_run_maps_pass_rate() {
+        let eval_run = EvalRun {
+            id: Uuid::new_v4(),
+            agent_id: Uuid::new_v4(),
+            scenario_set_id: None,
+            status: EvalRunStatus::Complete,
+            scenario_count: 5,
+            completed_count: 4,
+            error_count: 1,
+            aggregate_score: Some(0.73),
+            pass_rate: Some(0.20),
+            scores: None,
+            failure_clusters: None,
+            seed: 42,
+            concurrency: 5,
+            error_message: None,
+            started_at: None,
+            completed_at: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+        let resp = RunResponse::from(eval_run);
+        assert_eq!(resp.pass_rate, Some(0.20));
+        assert_eq!(resp.scenario_count, 5);
+        assert_eq!(resp.completed_count, 4);
+        assert_eq!(resp.error_count, 1);
+    }
+
+    #[test]
+    fn run_response_from_eval_run_maps_scenario_count_zero() {
+        let eval_run = EvalRun {
+            id: Uuid::new_v4(),
+            agent_id: Uuid::new_v4(),
+            scenario_set_id: None,
+            status: EvalRunStatus::Pending,
+            scenario_count: 0,
+            completed_count: 0,
+            error_count: 0,
+            aggregate_score: None,
+            pass_rate: None,
+            scores: None,
+            failure_clusters: None,
+            seed: 0,
+            concurrency: 1,
+            error_message: None,
+            started_at: None,
+            completed_at: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+        let resp = RunResponse::from(eval_run);
+        assert_eq!(resp.scenario_count, 0);
+        assert_eq!(resp.completed_count, 0);
+    }
+
+    // ── EvalRunStatus equality and cloning ─────────────────────────────────────
+
+    #[test]
+    fn eval_run_status_eq() {
+        assert_eq!(EvalRunStatus::Complete, EvalRunStatus::Complete);
+        assert_ne!(EvalRunStatus::Complete, EvalRunStatus::Error);
+    }
+
+    #[test]
+    fn eval_run_status_clone() {
+        let s = EvalRunStatus::Running;
+        let c = s.clone();
+        assert_eq!(s, c);
+    }
+
+    // ── StartRunRequest boundary cases ────────────────────────────────────────
+
+    #[test]
+    fn start_run_request_zero_scenario_count_allowed() {
+        let json = serde_json::json!({
+            "agent_id": "550e8400-e29b-41d4-a716-446655440000",
+            "scenario_count": 0
+        });
+        let req: StartRunRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(req.scenario_count, Some(0));
+    }
+
+    #[test]
+    fn start_run_request_large_concurrency() {
+        let json = serde_json::json!({
+            "agent_id": "550e8400-e29b-41d4-a716-446655440000",
+            "concurrency": 100
+        });
+        let req: StartRunRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(req.concurrency, Some(100));
+    }
+
+    #[test]
+    fn start_run_request_seed_zero() {
+        let json = serde_json::json!({
+            "agent_id": "550e8400-e29b-41d4-a716-446655440000",
+            "seed": 0
+        });
+        let req: StartRunRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(req.seed, Some(0));
+    }
+
+    #[test]
+    fn start_run_request_threshold_zero() {
+        let json = serde_json::json!({
+            "agent_id": "550e8400-e29b-41d4-a716-446655440000",
+            "threshold": 0.0
+        });
+        let req: StartRunRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(req.threshold, Some(0.0));
+    }
+
+    #[test]
+    fn start_run_request_threshold_one() {
+        let json = serde_json::json!({
+            "agent_id": "550e8400-e29b-41d4-a716-446655440000",
+            "threshold": 1.0
+        });
+        let req: StartRunRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(req.threshold, Some(1.0));
+    }
+
+    // ── ListRunsQuery pagination ───────────────────────────────────────────────
+
+    #[test]
+    fn list_runs_query_explicit_limit() {
+        let query: ListRunsQuery =
+            serde_json::from_value(serde_json::json!({"limit": 10})).unwrap();
+        let limit = query.limit.unwrap_or(50).min(200);
+        assert_eq!(limit, 10);
+    }
+
+    #[test]
+    fn list_runs_query_explicit_offset() {
+        let query: ListRunsQuery =
+            serde_json::from_value(serde_json::json!({"offset": 100})).unwrap();
+        assert_eq!(query.offset, Some(100));
+    }
+
+    #[test]
+    fn list_traces_query_default_limit() {
+        let query: ListTracesQuery = serde_json::from_value(serde_json::json!({})).unwrap();
+        let limit = query.limit.unwrap_or(100).min(500);
+        assert_eq!(limit, 100);
+    }
+
+    #[test]
+    fn list_traces_query_explicit_limit_below_cap() {
+        let query: ListTracesQuery =
+            serde_json::from_value(serde_json::json!({"limit": 200})).unwrap();
+        let limit = query.limit.unwrap_or(100).min(500);
+        assert_eq!(limit, 200);
+    }
+
+    // ── Progress SSE JSON shape ────────────────────────────────────────────────
+
+    #[test]
+    fn progress_event_status_is_string() {
+        let data = serde_json::json!({
+            "run_id": Uuid::new_v4().to_string(),
+            "status": "running",
+            "completed_count": 10_u32,
+            "scenario_count": 50_u32,
+            "error_count": 0_u32,
+        });
+        assert_eq!(data["status"].as_str(), Some("running"));
+    }
+
+    #[test]
+    fn progress_event_complete_status() {
+        let data = serde_json::json!({
+            "run_id": Uuid::new_v4().to_string(),
+            "status": EvalRunStatus::Complete.to_string(),
+            "completed_count": 50_u32,
+            "scenario_count": 50_u32,
+            "error_count": 0_u32,
+        });
+        assert_eq!(data["status"].as_str(), Some("complete"));
+    }
+
+    #[test]
+    fn run_response_error_count_zero_when_all_passed() {
+        let eval_run = EvalRun {
+            id: Uuid::new_v4(),
+            agent_id: Uuid::new_v4(),
+            scenario_set_id: None,
+            status: EvalRunStatus::Complete,
+            scenario_count: 5,
+            completed_count: 5,
+            error_count: 0,
+            aggregate_score: Some(1.0),
+            pass_rate: Some(1.0),
+            scores: None,
+            failure_clusters: None,
+            seed: 1,
+            concurrency: 5,
+            error_message: None,
+            started_at: None,
+            completed_at: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+        let resp = RunResponse::from(eval_run);
+        assert_eq!(resp.error_count, 0);
+        assert_eq!(resp.completed_count, 5);
     }
 }

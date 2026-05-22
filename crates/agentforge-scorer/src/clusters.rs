@@ -458,4 +458,256 @@ mod tests {
             FailureCluster::PrematureStop
         );
     }
+
+    // ── 15 new tests ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn error_trace_ignores_zero_scores() {
+        // Even with all-zero scores, an Error trace always maps to ApiError
+        let trace = make_empty_trace(TraceStatus::Error);
+        let scores = make_scores(0.0, 0.0, 0.0, 0.0, 0.0);
+        assert_eq!(
+            classify_failure_cluster(&trace, &scores, &[]),
+            FailureCluster::ApiError
+        );
+    }
+
+    #[test]
+    fn error_trace_ignores_high_scores() {
+        // Even with perfect scores, an Error trace maps to ApiError
+        let trace = make_empty_trace(TraceStatus::Error);
+        let scores = make_scores(1.0, 1.0, 1.0, 1.0, 1.0);
+        assert_eq!(
+            classify_failure_cluster(&trace, &scores, &[]),
+            FailureCluster::ApiError
+        );
+    }
+
+    #[test]
+    fn pass_trace_ignores_zero_scores() {
+        // Even with terrible scores, a Pass trace maps to NoFailure
+        let trace = make_empty_trace(TraceStatus::Pass);
+        let scores = make_scores(0.0, 0.0, 0.0, 0.0, 0.0);
+        assert_eq!(
+            classify_failure_cluster(&trace, &scores, &[]),
+            FailureCluster::NoFailure
+        );
+    }
+
+    #[test]
+    fn schema_at_exactly_boundary_is_not_violation() {
+        // schema_compliance == 0.3 is NOT below 0.3 → should not trigger schema violation
+        let trace = make_empty_trace(TraceStatus::Fail);
+        let scores = DimensionScores {
+            task_completion: 0.5,
+            tool_selection: 0.5,
+            argument_correctness: 0.5,
+            schema_compliance: 0.3,
+            instruction_adherence: 0.5,
+            path_efficiency: 0.5,
+        };
+        assert_ne!(
+            classify_failure_cluster(&trace, &scores, &[]),
+            FailureCluster::SchemaViolation,
+            "schema_compliance == 0.3 should NOT trigger SchemaViolation (threshold is < 0.3)"
+        );
+    }
+
+    #[test]
+    fn args_at_exactly_boundary_is_not_hallucinated() {
+        // argument_correctness == 0.3 is NOT below 0.3
+        let trace = make_empty_trace(TraceStatus::Fail);
+        let scores = DimensionScores {
+            task_completion: 0.5,
+            tool_selection: 0.5,
+            argument_correctness: 0.3,
+            schema_compliance: 0.5,
+            instruction_adherence: 0.5,
+            path_efficiency: 0.5,
+        };
+        assert_ne!(
+            classify_failure_cluster(&trace, &scores, &[]),
+            FailureCluster::HallucinatedArgument
+        );
+    }
+
+    #[test]
+    fn path_efficiency_at_exactly_boundary_does_not_use_hard_threshold() {
+        // path_efficiency == 0.1 is NOT below 0.1 → hard threshold not triggered.
+        // The soft path is used instead, and tool_selection (0.3) is the weakest
+        // candidate → WrongTool, not PrematureStop from the hard threshold.
+        let trace = make_empty_trace(TraceStatus::Fail);
+        let scores = DimensionScores {
+            task_completion: 0.9,
+            tool_selection: 0.3, // weakest candidate → soft path yields WrongTool
+            argument_correctness: 0.5,
+            schema_compliance: 0.5,
+            instruction_adherence: 0.9,
+            path_efficiency: 0.1, // exactly at threshold — hard path NOT triggered
+        };
+        // Hard threshold (< 0.1) not met; soft path runs instead
+        assert_eq!(
+            classify_failure_cluster(&trace, &scores, &[]),
+            FailureCluster::WrongTool
+        );
+    }
+
+    #[test]
+    fn schema_keyword_triggers_schema_violation() {
+        let trace = make_empty_trace(TraceStatus::Fail);
+        let scores = make_scores(0.7, 0.9, 0.9, 0.9, 0.7);
+        assert_eq!(
+            classify_failure_cluster(
+                &trace,
+                &scores,
+                &["output schema validation failed".to_string()]
+            ),
+            FailureCluster::SchemaViolation
+        );
+    }
+
+    #[test]
+    fn hallucinated_keyword_triggers_hallucinated_argument() {
+        let trace = make_empty_trace(TraceStatus::Fail);
+        let scores = make_scores(0.7, 0.9, 0.9, 0.9, 0.7);
+        assert_eq!(
+            classify_failure_cluster(&trace, &scores, &["hallucinated field value".to_string()]),
+            FailureCluster::HallucinatedArgument
+        );
+    }
+
+    #[test]
+    fn constraint_keyword_triggers_constraint_breach_variant() {
+        let trace = make_empty_trace(TraceStatus::Fail);
+        let scores = make_scores(0.7, 0.9, 0.9, 0.9, 0.7);
+        assert_eq!(
+            classify_failure_cluster(&trace, &scores, &["constraint violated".to_string()]),
+            FailureCluster::ConstraintBreach
+        );
+    }
+
+    #[test]
+    fn review_needed_with_low_tool_selection_yields_wrong_tool() {
+        // ReviewNeeded traces should not get NoFailure, and should classify by dimension
+        let trace = make_empty_trace(TraceStatus::ReviewNeeded);
+        let scores = DimensionScores {
+            task_completion: 0.6,
+            tool_selection: 0.2,
+            argument_correctness: 0.8,
+            schema_compliance: 0.8,
+            instruction_adherence: 0.8,
+            path_efficiency: 0.8,
+        };
+        let cluster = classify_failure_cluster(&trace, &scores, &[]);
+        assert_ne!(cluster, FailureCluster::NoFailure);
+    }
+
+    #[test]
+    fn loop_detection_exactly_five_llm_calls_does_not_trigger() {
+        // Threshold is >5 — exactly 5 should not trigger looping
+        let mut trace = make_empty_trace(TraceStatus::Fail);
+        use agentforge_core::{LlmCallStep, TraceStep};
+        use chrono::Utc;
+        for i in 0..5u32 {
+            trace.steps.push(TraceStep::LlmCall(LlmCallStep {
+                index: i,
+                model: "gpt-4o".to_string(),
+                messages: vec![],
+                response: serde_json::json!({}),
+                input_tokens: 50,
+                output_tokens: 20,
+                latency_ms: 500,
+                timestamp: Utc::now(),
+            }));
+        }
+        let scores = make_scores(0.4, 0.4, 0.9, 0.9, 0.2);
+        assert_ne!(
+            classify_failure_cluster(&trace, &scores, &[]),
+            FailureCluster::Looping,
+            "Exactly 5 LLM calls should NOT trigger looping (threshold is >5)"
+        );
+    }
+
+    #[test]
+    fn loop_detection_six_llm_calls_two_tools_does_not_trigger() {
+        // >5 LLM calls AND tool_count > 1 should NOT trigger looping
+        let mut trace = make_empty_trace(TraceStatus::Fail);
+        use agentforge_core::{LlmCallStep, ToolCallStep, TraceStep};
+        use chrono::Utc;
+        for i in 0..6u32 {
+            trace.steps.push(TraceStep::LlmCall(LlmCallStep {
+                index: i,
+                model: "gpt-4o".to_string(),
+                messages: vec![],
+                response: serde_json::json!({}),
+                input_tokens: 50,
+                output_tokens: 20,
+                latency_ms: 500,
+                timestamp: Utc::now(),
+            }));
+        }
+        // 2 tool calls → tool_count > 1 → looping condition NOT met
+        for i in 6..8u32 {
+            trace.steps.push(TraceStep::ToolCall(ToolCallStep {
+                index: i,
+                tool_name: "search".to_string(),
+                call_id: format!("c{i}"),
+                arguments: serde_json::json!({}),
+                timestamp: Utc::now(),
+            }));
+        }
+        let scores = make_scores(0.5, 0.5, 0.9, 0.9, 0.3);
+        assert_ne!(
+            classify_failure_cluster(&trace, &scores, &[]),
+            FailureCluster::Looping
+        );
+    }
+
+    #[test]
+    fn all_perfect_scores_fail_trace_gets_meaningful_cluster() {
+        // Edge: Fail status with all perfect scores (shouldn't happen in practice,
+        // but the classifier must return something other than NoFailure)
+        let trace = make_empty_trace(TraceStatus::Fail);
+        let scores = make_scores(1.0, 1.0, 1.0, 1.0, 1.0);
+        let cluster = classify_failure_cluster(&trace, &scores, &[]);
+        assert_ne!(cluster, FailureCluster::NoFailure);
+    }
+
+    #[test]
+    fn schema_violation_takes_priority_over_low_args() {
+        // Both schema < 0.3 and args < 0.3 — schema check comes first
+        let trace = make_empty_trace(TraceStatus::Fail);
+        let scores = DimensionScores {
+            task_completion: 0.8,
+            tool_selection: 0.8,
+            argument_correctness: 0.2, // < 0.3
+            schema_compliance: 0.1,    // < 0.3 — checked before args
+            instruction_adherence: 0.8,
+            path_efficiency: 0.5,
+        };
+        assert_eq!(
+            classify_failure_cluster(&trace, &scores, &[]),
+            FailureCluster::SchemaViolation,
+            "Schema violation should take priority over HallucinatedArgument"
+        );
+    }
+
+    #[test]
+    fn empty_failure_reasons_falls_back_to_dimension_analysis() {
+        // No keyword hints → falls back to dimension-based analysis
+        let trace = make_empty_trace(TraceStatus::Fail);
+        let scores = DimensionScores {
+            task_completion: 0.4,
+            tool_selection: 0.8,
+            argument_correctness: 0.8,
+            schema_compliance: 0.8,
+            instruction_adherence: 0.8,
+            path_efficiency: 0.8,
+        };
+        // task_completion is weakest → PrematureStop
+        assert_eq!(
+            classify_failure_cluster(&trace, &scores, &[]),
+            FailureCluster::PrematureStop
+        );
+    }
 }

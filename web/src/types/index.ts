@@ -4,6 +4,7 @@ export interface AgentResponse {
   name: string
   version: string
   sha: string
+  parent_sha?: string
   format: string
   promoted: boolean
   is_champion: boolean
@@ -17,6 +18,11 @@ export interface RunResponse {
   id: string
   agent_id: string
   status: RunStatus
+  aggregate_score?: number
+  pass_rate?: number
+  scenario_count: number
+  completed_count: number
+  error_count: number
   created_at: string
 }
 

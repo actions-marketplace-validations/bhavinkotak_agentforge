@@ -18,3 +18,6 @@ export const fetchScorecard = (id: string) =>
 
 export const promoteRun = (runId: string) =>
   apiFetch<PromoteResponse>(`/promote/${runId}`, { method: 'POST' })
+
+export const fetchRunsForAgent = (agentId: string, limit = 20) =>
+  apiFetch<RunResponse[]>(`/agents/${agentId}/runs?limit=${limit}`)

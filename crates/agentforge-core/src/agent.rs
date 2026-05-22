@@ -179,4 +179,126 @@ mod tests {
         assert_eq!(hints.pass_threshold, Some(0.85));
         assert_eq!(hints.scenario_count, Some(100));
     }
+
+    // ── 9 new tests ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn model_provider_display_all_variants() {
+        assert_eq!(ModelProvider::Openai.to_string(), "openai");
+        assert_eq!(ModelProvider::Anthropic.to_string(), "anthropic");
+        assert_eq!(ModelProvider::Ollama.to_string(), "ollama");
+        assert_eq!(ModelProvider::Bedrock.to_string(), "bedrock");
+        assert_eq!(ModelProvider::NvidiaNim.to_string(), "nvidia_nim");
+        assert_eq!(ModelProvider::Custom.to_string(), "custom");
+    }
+
+    #[test]
+    fn model_provider_serde_roundtrip() {
+        let json = serde_json::to_string(&ModelProvider::NvidiaNim).unwrap();
+        assert_eq!(json, r#""nvidia_nim""#);
+        let back: ModelProvider = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, ModelProvider::NvidiaNim);
+    }
+
+    #[test]
+    fn agent_file_format_display_all_variants() {
+        assert_eq!(AgentFileFormat::NativeYaml.to_string(), "native_yaml");
+        assert_eq!(AgentFileFormat::OpenaiJson.to_string(), "openai_json");
+        assert_eq!(AgentFileFormat::AnthropicJson.to_string(), "anthropic_json");
+        assert_eq!(AgentFileFormat::LangchainYaml.to_string(), "langchain_yaml");
+        assert_eq!(AgentFileFormat::CrewaiYaml.to_string(), "crewai_yaml");
+        assert_eq!(
+            AgentFileFormat::CopilotAgentMd.to_string(),
+            "copilot_agent_md"
+        );
+    }
+
+    #[test]
+    fn agent_file_format_from_str_all_variants() {
+        use std::str::FromStr;
+        let pairs = [
+            ("native_yaml", AgentFileFormat::NativeYaml),
+            ("openai_json", AgentFileFormat::OpenaiJson),
+            ("anthropic_json", AgentFileFormat::AnthropicJson),
+            ("langchain_yaml", AgentFileFormat::LangchainYaml),
+            ("crewai_yaml", AgentFileFormat::CrewaiYaml),
+            ("copilot_agent_md", AgentFileFormat::CopilotAgentMd),
+        ];
+        for (s, expected) in &pairs {
+            assert_eq!(AgentFileFormat::from_str(s).unwrap(), *expected);
+        }
+    }
+
+    #[test]
+    fn agent_file_format_from_str_unknown_returns_err() {
+        use std::str::FromStr;
+        assert!(AgentFileFormat::from_str("unknown_format").is_err());
+    }
+
+    #[test]
+    fn eval_hints_default_typical_turns() {
+        let hints = EvalHints::default();
+        assert_eq!(hints.typical_turns, Some(3));
+        assert!(hints.critical_tools.is_empty());
+        assert!(hints.domain.is_none());
+    }
+
+    #[test]
+    fn lint_severity_serde() {
+        let json = serde_json::to_string(&LintSeverity::Error).unwrap();
+        assert_eq!(json, r#""error""#);
+        let back: LintSeverity = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, LintSeverity::Error);
+
+        let json2 = serde_json::to_string(&LintSeverity::Warning).unwrap();
+        assert_eq!(json2, r#""warning""#);
+    }
+
+    #[test]
+    fn tool_definition_stores_fields() {
+        let tool = ToolDefinition {
+            name: "get_order".to_string(),
+            description: "Fetch an order by ID".to_string(),
+            parameters: serde_json::json!({"type": "object", "properties": {"id": {"type": "string"}}}),
+        };
+        assert_eq!(tool.name, "get_order");
+        assert_eq!(tool.parameters["type"], "object");
+    }
+
+    #[test]
+    fn agent_version_parent_sha_is_optional() {
+        let v = AgentVersion {
+            id: uuid::Uuid::new_v4(),
+            name: "test".to_string(),
+            version: "1.0.0".to_string(),
+            sha: "abc123".to_string(),
+            file_content: AgentFile {
+                agentforge_schema_version: "1".to_string(),
+                name: "test".to_string(),
+                version: "1.0.0".to_string(),
+                model: ModelConfig {
+                    provider: ModelProvider::Openai,
+                    model_id: "gpt-4o".to_string(),
+                    temperature: None,
+                    max_tokens: None,
+                    top_p: None,
+                },
+                system_prompt: "You are helpful.".to_string(),
+                tools: vec![],
+                output_schema: None,
+                constraints: vec![],
+                eval_hints: None,
+                metadata: None,
+            },
+            raw_content: "{}".to_string(),
+            format: AgentFileFormat::NativeYaml,
+            promoted: false,
+            is_champion: false,
+            changelog: None,
+            parent_sha: Some("parent_sha_123".to_string()),
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        };
+        assert_eq!(v.parent_sha.as_deref(), Some("parent_sha_123"));
+    }
 }

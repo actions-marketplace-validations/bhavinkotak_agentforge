@@ -3,7 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom'
 import { useQuery, useMutation } from '@tanstack/react-query'
 import { Play, GitCompare, Cpu, FileDown, Copy } from 'lucide-react'
 import { fetchAgent } from '@/api/agents'
-import { startRun } from '@/api/runs'
+import { startRun, fetchRunsForAgent } from '@/api/runs'
 import { startShadowRun } from '@/api/shadow'
 import { startBenchmark } from '@/api/benchmarks'
 import { ApiError } from '@/api/client'
@@ -229,6 +229,118 @@ export function AgentDetailPage() {
           </CardContent>
         </Card>
       )}
+
+      {/* Score history */}
+      <Card>
+        <CardHeader><CardTitle>Score History</CardTitle></CardHeader>
+        <CardContent>
+          <ScoreHistoryPanel agentId={id!} onRunClick={rid => navigate(`/runs/${rid}`)} />
+        </CardContent>
+      </Card>
+    </div>
+  )
+}
+
+function ScoreHistoryPanel({ agentId, onRunClick }: { agentId: string; onRunClick: (id: string) => void }) {
+  const navigate = useNavigate()
+  const runsQ = useQuery({
+    queryKey: ['agent-runs', agentId],
+    queryFn: () => fetchRunsForAgent(agentId),
+  })
+
+  const runs = (runsQ.data ?? []).filter(r => r.status === 'complete' && r.aggregate_score != null)
+
+  if (runsQ.isLoading) return <p className="text-xs text-gray-400 py-2">Loading run history…</p>
+  if (runs.length === 0) return <p className="text-xs text-gray-400 py-2">No completed runs yet.</p>
+
+  const scores = runs.map(r => r.aggregate_score as number)
+  const maxScore = Math.max(...scores)
+  const minScore = Math.min(...scores)
+  const latestScore = scores[0]
+  const firstScore = scores[scores.length - 1]
+  const delta = latestScore - firstScore
+
+  return (
+    <div className="space-y-3">
+      {/* Trend summary */}
+      <div className="flex items-center gap-6 text-sm">
+        <span className="text-gray-500">Latest: <strong className="text-gray-900">{(latestScore * 100).toFixed(1)}%</strong></span>
+        <span className="text-gray-500">Best: <strong className="text-gray-900">{(maxScore * 100).toFixed(1)}%</strong></span>
+        <span className={delta >= 0 ? 'text-green-600' : 'text-red-600'}>
+          {delta >= 0 ? '▲' : '▼'} {Math.abs(delta * 100).toFixed(1)}pp vs first run
+        </span>
+      </div>
+
+      {/* Sparkline */}
+      <svg viewBox={`0 0 ${runs.length * 28} 32`} className="h-8 w-full overflow-visible" preserveAspectRatio="none">
+        {scores.slice().reverse().map((s, i) => {
+          const range = maxScore - minScore || 0.01
+          const y = 28 - ((s - minScore) / range) * 24
+          const x = i * 28 + 8
+          return (
+            <g key={i}>
+              <circle cx={x} cy={y} r={3} fill={i === scores.length - 1 ? '#2563eb' : '#93c5fd'} />
+              {i > 0 && (
+                <line
+                  x1={(i - 1) * 28 + 8} y1={28 - ((scores.slice().reverse()[i - 1] - minScore) / range) * 24}
+                  x2={x} y2={y}
+                  stroke="#93c5fd" strokeWidth={1.5}
+                />
+              )}
+            </g>
+          )
+        })}
+      </svg>
+
+      {/* Table */}
+      <div className="overflow-hidden rounded-md border border-gray-100">
+        <table className="w-full text-xs">
+          <thead>
+            <tr className="border-b border-gray-100 bg-gray-50 text-left text-gray-500">
+              <th className="px-3 py-2">Date</th>
+              <th className="px-3 py-2 text-right">Score</th>
+              <th className="px-3 py-2 text-right">Pass %</th>
+              <th className="px-3 py-2 text-right">Traces</th>
+              <th className="px-3 py-2 text-right">Errors</th>
+              <th className="px-3 py-2"></th>
+            </tr>
+          </thead>
+          <tbody>
+            {runs.slice(0, 10).map((r, i) => (
+              <tr
+                key={r.id}
+                onClick={() => onRunClick(r.id)}
+                className={`cursor-pointer border-b border-gray-50 hover:bg-blue-50 ${i === 0 ? 'font-medium' : ''}`}
+              >
+                <td className="px-3 py-2 text-gray-600">{fmtDate(r.created_at)}</td>
+                <td className="px-3 py-2 text-right font-mono">
+                  <span className={r.aggregate_score! >= 0.85 ? 'text-green-700' : r.aggregate_score! >= 0.65 ? 'text-yellow-700' : 'text-red-600'}>
+                    {((r.aggregate_score ?? 0) * 100).toFixed(1)}%
+                  </span>
+                </td>
+                <td className="px-3 py-2 text-right text-gray-600">
+                  {r.pass_rate != null ? `${(r.pass_rate * 100).toFixed(0)}%` : '—'}
+                </td>
+                <td className="px-3 py-2 text-right text-gray-600">{r.completed_count ?? '—'}</td>
+                <td className="px-3 py-2 text-right text-gray-600">
+                  <span className={(r.error_count ?? 0) > 0 ? 'text-red-600' : ''}>
+                    {r.error_count ?? 0}
+                  </span>
+                </td>
+                <td className="px-3 py-2" onClick={e => e.stopPropagation()}>
+                  <button
+                    title="Diff this agent version"
+                    onClick={() => navigate(`/diff?v1=${r.agent_id}`)}
+                    className="text-gray-400 hover:text-blue-600"
+                  >
+                    <GitCompare className="h-3.5 w-3.5" />
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   )
 }
