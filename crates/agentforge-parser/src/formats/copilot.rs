@@ -390,7 +390,7 @@ mod tests {
                 .parameters
                 .get("properties")
                 .and_then(|p| p.as_object())
-                .expect(&format!("'{}' must have a properties object", tool.name));
+                .unwrap_or_else(|| panic!("'{}' must have a properties object", tool.name));
             assert!(
                 !props.is_empty(),
                 "Tool '{}' has empty properties — models cannot call it",
@@ -400,7 +400,7 @@ mod tests {
                 .parameters
                 .get("required")
                 .and_then(|r| r.as_array())
-                .expect(&format!("'{}' must have a required array", tool.name));
+                .unwrap_or_else(|| panic!("'{}' must have a required array", tool.name));
             assert!(
                 !required.is_empty(),
                 "Tool '{}' has no required fields — models may skip it",
@@ -423,7 +423,7 @@ mod tests {
                 .parameters
                 .get("properties")
                 .and_then(|p| p.as_object())
-                .expect(&format!("'{}' must have properties", tool.name));
+                .unwrap_or_else(|| panic!("'{}' must have properties", tool.name));
             assert!(
                 !props.is_empty(),
                 "Fallback tool '{}' must not have empty properties",

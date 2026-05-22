@@ -133,6 +133,9 @@ pub enum FailureCluster {
     SchemaViolation,
     ConstraintBreach,
     NoFailure,
+    /// Trace failed due to an LLM/API infrastructure error (rate limit, timeout,
+    /// 5xx), not due to agent behaviour. These do not reflect agent quality.
+    ApiError,
     Unknown,
 }
 
@@ -146,6 +149,7 @@ impl std::fmt::Display for FailureCluster {
             FailureCluster::SchemaViolation => write!(f, "schema_violation"),
             FailureCluster::ConstraintBreach => write!(f, "constraint_breach"),
             FailureCluster::NoFailure => write!(f, "no_failure"),
+            FailureCluster::ApiError => write!(f, "api_error"),
             FailureCluster::Unknown => write!(f, "unknown"),
         }
     }

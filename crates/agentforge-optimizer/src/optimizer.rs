@@ -572,8 +572,7 @@ mod tests {
             .unwrap();
         let has_few_shot = result
             .mutation_types_applied
-            .iter()
-            .any(|m| *m == MutationType::FewShotInjection);
+            .contains(&MutationType::FewShotInjection);
         assert!(
             !has_few_shot,
             "FewShotInjection must not be applied when insufficient passing traces"

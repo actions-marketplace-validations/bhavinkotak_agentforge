@@ -30,10 +30,22 @@ function DimBar({ label, score }: { label: string; score: number }) {
   )
 }
 
+const CLUSTER_LABELS: Record<string, string> = {
+  wrong_tool: 'Wrong Tool Called',
+  hallucinated_argument: 'Hallucinated Argument',
+  looping: 'Agent Looping',
+  premature_stop: 'Premature Stop',
+  schema_violation: 'Schema Violation',
+  constraint_breach: 'Constraint Breach',
+  api_error: 'API / Infrastructure Error',
+  unknown: 'Unclassified',
+}
+
 function ClusterRow({ c }: { c: FailureCluster }) {
+  const label = CLUSTER_LABELS[c.cluster] ?? c.cluster
   return (
     <div className="flex items-center justify-between py-1 text-sm">
-      <span className="text-gray-700">{c.cluster}</span>
+      <span className="text-gray-700">{label}</span>
       <span className="font-medium text-gray-900">
         {c.count} ({(c.percentage * 100).toFixed(0)}%)
       </span>
@@ -104,16 +116,18 @@ export function ScorecardDisplay({ run }: Props) {
         </div>
       )}
 
-      {/* Failure clusters */}
-      {run.failure_clusters && run.failure_clusters.length > 0 && (
+      {/* Failure clusters — exclude no_failure entries which are not failures */}
+      {run.failure_clusters && run.failure_clusters.filter(c => c.cluster !== 'no_failure').length > 0 && (
         <div className="rounded-lg border border-gray-200 bg-white p-5">
           <h3 className="mb-3 text-sm font-semibold text-gray-900">
             Failure Clusters
           </h3>
           <div className="divide-y divide-gray-100">
-            {run.failure_clusters.map((c) => (
-              <ClusterRow key={c.cluster} c={c} />
-            ))}
+            {run.failure_clusters
+              .filter((c) => c.cluster !== 'no_failure')
+              .map((c) => (
+                <ClusterRow key={c.cluster} c={c} />
+              ))}
           </div>
         </div>
       )}

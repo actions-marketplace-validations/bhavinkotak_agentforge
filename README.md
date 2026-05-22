@@ -117,33 +117,44 @@ Humans set the quality bar. The platform handles the repetitive evaluation and i
 
 ## Project Structure
 
-This is a Cargo workspace with 10 crates:
+This is a Cargo workspace with 16 crates:
 
 ```
 agentforge/
 ├── Cargo.toml                  # Workspace root
 ├── Cargo.lock
-├── docker-compose.yml          # PostgreSQL + Redis for local dev
+├── docker-compose.yml          # PostgreSQL for local dev
 ├── Dockerfile
 ├── .env.example                # Environment variable template
 ├── migrations/                 # SQLx database migrations
 │   ├── 001_agent_versions.sql
 │   ├── 002_eval_runs.sql
-│   ├── 003_traces.sql
-│   └── 004_scenarios.sql
+│   ├── 003_scenarios.sql
+│   ├── 004_traces.sql
+│   ├── 005_shadow_runs.sql
+│   ├── 006_finetune_exports.sql
+│   ├── 007_benchmarks.sql
+│   └── 008_trace_cost.sql
 ├── fixtures/
-│   └── customer-support-agent.yaml   # Example agent file
+│   ├── customer-support-agent.yaml     # Native YAML example
+│   └── agentforge-evaluator.agent.md   # Copilot .agent.md example
 └── crates/
     ├── agentforge-core/        # Shared types, errors, traits (AgentFile, EvalRun, Trace, Scenario…)
-    ├── agentforge-parser/      # Agent file parsing (YAML, JSON, Markdown frontmatter)
+    ├── agentforge-parser/      # Agent file parsing (YAML, JSON, Markdown/Copilot frontmatter)
     ├── agentforge-scenarios/   # Scenario generation (schema-derived, adversarial, domain-seeded)
     ├── agentforge-runner/      # Parallel agent execution + full trace capture
     ├── agentforge-scorer/      # Deterministic assertions + LLM-as-judge scoring
-    ├── agentforge-optimizer/   # Variant generation via prompt/tool mutation strategies
+    ├── agentforge-optimizer/   # Variant generation + self-improvement loop
     ├── agentforge-gatekeeper/  # Three-gate promotion logic
     ├── agentforge-db/          # PostgreSQL repository layer (SQLx)
     ├── agentforge-api/         # REST API (Axum 0.8)
-    └── agentforge-cli/         # CLI binary (Clap 4)
+    ├── agentforge-cli/         # CLI binary (Clap 4)
+    ├── agentforge-benchmarks/  # Standard benchmark comparison suite
+    ├── agentforge-finetune/    # Fine-tune dataset exporter (JSONL)
+    ├── agentforge-multiagent/  # Multi-agent composition testing
+    ├── agentforge-observability/ # OTLP trace export hooks
+    ├── agentforge-online-eval/ # Shadow-mode real-traffic comparison
+    └── agentforge-redteam/     # Adversarial safety red-team probes
 ```
 
 ---
@@ -168,7 +179,10 @@ docker-compose up -d
 
 # Copy and configure environment
 cp .env.example .env
-# Edit .env and add your OPENAI_API_KEY and/or ANTHROPIC_API_KEY
+# Edit .env — add at minimum one LLM API key:
+# OpenAI:   OPENAI_API_KEY=sk-...
+# Anthropic: ANTHROPIC_API_KEY=sk-ant-...
+# NVIDIA NIM (free tier): NVIDIA_API_KEY=nvapi-...
 ```
 
 ### 2. Run database migrations
@@ -390,6 +404,12 @@ An **OpenAPI 3.1 spec** is available at [docs/openapi.yaml](docs/openapi.yaml) a
 > **Scenario count limit on `POST /runs`:** `scenario_count` must not exceed `AGENTFORGE_MAX_SCENARIOS`
 > (default: `2000`). Requests that exceed this value are rejected with HTTP 400.
 
+> **`auto_optimize` on `POST /runs`:** set `"auto_optimize": true` to enable the self-improvement loop.
+> After the eval completes, if the aggregate score is below `0.85`, the optimizer generates up to 5
+> candidate variants (prompt rewrites, tool-description rewrites, example injections, constraint
+> tightenings), quick-evaluates each on a 10-scenario subset, and saves the best-performing variant
+> as a new agent version in the database. The parent SHA is recorded for full lineage tracking.
+
 > **Authentication:** set `AGENTFORGE_API_KEY` to require a Bearer token on all `/api/v1/*` endpoints.
 > Requests without a valid `Authorization: Bearer <key>` header will receive HTTP 401. The `/health`
 > endpoint is always unauthenticated. When the env var is unset the server runs in unauthenticated
@@ -414,7 +434,8 @@ curl -X POST http://localhost:8080/api/v1/runs \
     "seed": 42,
     "threshold": 0.85,
     "provider": "openai",
-    "judge_provider": "anthropic"
+    "judge_provider": "anthropic",
+    "auto_optimize": true
   }'
 
 # Poll for run results (replace with the run UUID returned above)
@@ -442,12 +463,16 @@ Weights are configurable via environment variables (`AGENTFORGE_WEIGHT_TASK`, `A
 
 Traces are automatically grouped into failure clusters:
 
-- `wrong_tool` — called an incorrect or unnecessary tool
-- `hallucinated_arg` — passed a fabricated or invalid argument value
-- `looping` — repeated the same tool call without progress
-- `premature_stop` — ended the conversation before completing the task
-- `schema_violation` — output did not match the declared schema
-- `constraint_breach` — violated a behavioral constraint
+| Cluster | Meaning |
+|---------|----------|
+| `wrong_tool` | Called an incorrect or unnecessary tool |
+| `hallucinated_argument` | Passed a fabricated or invalid argument value |
+| `looping` | Repeated the same tool call without progress |
+| `premature_stop` | Ended the conversation before completing the task |
+| `schema_violation` | Output did not match the declared schema |
+| `constraint_breach` | Violated a behavioural constraint |
+| `api_error` | Infrastructure failure (rate limit, 5xx, timeout) — not an agent quality issue |
+| `no_failure` | Trace passed — no failure to classify |
 
 ---
 
@@ -477,6 +502,9 @@ All configuration is via environment variables. See [`.env.example`](.env.exampl
 | `REDIS_URL` | `redis://localhost:6379` | Redis for caching |
 | `OPENAI_API_KEY` | — | OpenAI API key |
 | `ANTHROPIC_API_KEY` | — | Anthropic API key |
+| `NVIDIA_API_KEY` | — | NVIDIA NIM API key (`nvapi-…`) |
+| `AGENTFORGE_NVIDIA_MODEL` | `mistralai/mistral-small-4-119b-2603` | NVIDIA NIM model to use for the agent |
+| `AGENTFORGE_JUDGE_BASE_URL` | _(provider default)_ | Override the judge LLM base URL (useful for OpenAI-compatible endpoints) |
 | `AGENTFORGE_HOST` | `127.0.0.1` | API server bind address |
 | `AGENTFORGE_PORT` | `8080` | API server port |
 | `AGENTFORGE_LOG_LEVEL` | `info` | Log level (trace/debug/info/warn/error) |

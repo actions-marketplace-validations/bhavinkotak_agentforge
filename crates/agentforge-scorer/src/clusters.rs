@@ -11,7 +11,8 @@ pub fn classify_failure_cluster(
     }
 
     if trace.status == TraceStatus::Error {
-        return FailureCluster::Unknown;
+        // Infrastructure failure (rate limit, 5xx, timeout) — not an agent quality issue.
+        return FailureCluster::ApiError;
     }
 
     // --- Hard failures (unambiguous signal, check first) ---
@@ -144,12 +145,12 @@ mod tests {
     }
 
     #[test]
-    fn error_returns_unknown() {
+    fn error_returns_api_error() {
         let trace = make_empty_trace(TraceStatus::Error);
         let scores = make_scores(0.0, 0.0, 0.0, 0.0, 0.0);
         assert_eq!(
             classify_failure_cluster(&trace, &scores, &[]),
-            FailureCluster::Unknown
+            FailureCluster::ApiError
         );
     }
 
