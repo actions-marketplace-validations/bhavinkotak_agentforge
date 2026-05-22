@@ -82,7 +82,10 @@ JSON array:"#,
         prompt_excerpt = agent.system_prompt.chars().take(400).collect::<String>(),
     );
 
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(60))
+        .build()
+        .map_err(|e| AgentForgeError::HttpError(e.to_string()))?;
     let response = client
         .post(format!("{}/chat/completions", base_url))
         .header("Authorization", format!("Bearer {}", api_key))
@@ -93,15 +96,17 @@ JSON array:"#,
                 {"role": "system", "content": "You are a test scenario generator. Output only valid JSON with no markdown fences or extra text."},
                 {"role": "user", "content": prompt}
             ],
-            "temperature": 0.7
+            "temperature": 0.7,
+            "max_tokens": 1024
         }))
         .send()
         .await
         .map_err(|e| AgentForgeError::HttpError(e.to_string()))?;
 
+    let provider = if base_url.contains("nvidia") { "nvidia" } else { "openai" };
     if !response.status().is_success() {
         return Err(AgentForgeError::LlmError {
-            provider: "openai".to_string(),
+            provider: provider.to_string(),
             message: format!("HTTP {}", response.status()),
         });
     }

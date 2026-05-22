@@ -87,7 +87,7 @@ export function ScorecardDisplay({ run }: Props) {
       {someErrored && (
         <div className="rounded-md border border-yellow-200 bg-yellow-50 px-4 py-3 text-sm text-yellow-800">
           {run.error_count} of {run.scenario_count} traces errored — scores reflect only the{' '}
-          {run.completed_count} successful traces. Check your LLM API key and quota.
+          {run.completed_count} successful traces. Check LLM API availability and quota.
         </div>
       )}
 
