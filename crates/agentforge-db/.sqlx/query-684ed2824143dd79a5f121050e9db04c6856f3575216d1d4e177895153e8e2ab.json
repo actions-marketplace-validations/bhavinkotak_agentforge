@@ -1,0 +1,158 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT id, run_id, scenario_id,\n                   status as \"status: String\",\n                   steps, final_output, scores, aggregate_score,\n                   failure_cluster as \"failure_cluster: String\",\n                   failure_reason, review_needed,\n                   llm_calls, tool_invocations, input_tokens, output_tokens,\n                   latency_ms, retry_count, seed, created_at\n            FROM traces WHERE run_id = $1 ORDER BY created_at ASC\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "run_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "scenario_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "status: String",
+        "type_info": {
+          "Custom": {
+            "name": "trace_status",
+            "kind": {
+              "Enum": [
+                "pass",
+                "fail",
+                "error",
+                "review_needed"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "steps",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 5,
+        "name": "final_output",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 6,
+        "name": "scores",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 7,
+        "name": "aggregate_score",
+        "type_info": "Float8"
+      },
+      {
+        "ordinal": 8,
+        "name": "failure_cluster: String",
+        "type_info": {
+          "Custom": {
+            "name": "failure_cluster",
+            "kind": {
+              "Enum": [
+                "wrong_tool",
+                "hallucinated_argument",
+                "looping",
+                "premature_stop",
+                "schema_violation",
+                "constraint_breach",
+                "no_failure",
+                "unknown"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "failure_reason",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 10,
+        "name": "review_needed",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 11,
+        "name": "llm_calls",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 12,
+        "name": "tool_invocations",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 13,
+        "name": "input_tokens",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 14,
+        "name": "output_tokens",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 15,
+        "name": "latency_ms",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 16,
+        "name": "retry_count",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 17,
+        "name": "seed",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 18,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "684ed2824143dd79a5f121050e9db04c6856f3575216d1d4e177895153e8e2ab"
+}

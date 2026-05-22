@@ -78,6 +78,10 @@ pub struct OpenAiClient {
     base_url: String,
     api_key: String,
     model: String,
+    /// Provider name used in error messages. Defaults to "openai" but can be
+    /// overridden when this client is used as the inner transport for another
+    /// provider (e.g. NvidiaClient sets this to "nvidia").
+    provider: String,
     client: reqwest::Client,
 }
 
@@ -91,10 +95,24 @@ impl OpenAiClient {
             base_url: base_url.into(),
             api_key: api_key.into(),
             model: model.into(),
+            provider: "openai".to_string(),
             client: reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(120))
                 .build()
                 .expect("valid reqwest client"),
+        }
+    }
+
+    /// Create with a custom provider label (used when wrapping for another endpoint).
+    pub fn new_with_provider(
+        base_url: impl Into<String>,
+        api_key: impl Into<String>,
+        model: impl Into<String>,
+        provider: impl Into<String>,
+    ) -> Self {
+        Self {
+            provider: provider.into(),
+            ..Self::new(base_url, api_key, model)
         }
     }
 
@@ -173,15 +191,23 @@ impl LlmClient for OpenAiClient {
 
         if resp.status() == 429 {
             return Err(AgentForgeError::RateLimitExceeded {
-                provider: "openai".to_string(),
+                provider: self.provider.clone(),
             });
         }
 
         if !resp.status().is_success() {
             let status = resp.status();
             let text = resp.text().await.unwrap_or_default();
+            // 5xx errors are transient (gateway timeouts, overloaded servers);
+            // wrap them as HttpError so the retry logic in the runner picks them up.
+            if status.is_server_error() {
+                return Err(AgentForgeError::HttpError(format!(
+                    "{}: HTTP {status}: {text}",
+                    self.provider
+                )));
+            }
             return Err(AgentForgeError::LlmError {
-                provider: "openai".to_string(),
+                provider: self.provider.clone(),
                 message: format!("HTTP {status}: {text}"),
             });
         }
@@ -191,11 +217,11 @@ impl LlmClient for OpenAiClient {
             .await
             .map_err(|e| AgentForgeError::HttpError(e.to_string()))?;
 
-        parse_openai_response(raw, latency_ms)
+        parse_openai_response(raw, latency_ms, &self.provider)
     }
 
     fn provider_name(&self) -> &str {
-        "openai"
+        &self.provider
     }
 
     fn model_id(&self) -> &str {
@@ -203,11 +229,11 @@ impl LlmClient for OpenAiClient {
     }
 }
 
-fn parse_openai_response(raw: serde_json::Value, latency_ms: u64) -> Result<LlmResponse> {
+fn parse_openai_response(raw: serde_json::Value, latency_ms: u64, provider: &str) -> Result<LlmResponse> {
     let choice = raw["choices"][0]
         .as_object()
         .ok_or_else(|| AgentForgeError::LlmError {
-            provider: "openai".to_string(),
+            provider: provider.to_string(),
             message: "No choices in response".to_string(),
         })?;
 
@@ -569,7 +595,12 @@ impl NvidiaClient {
     /// Create a new NVIDIA NIM client targeting `build.nvidia.com`.
     pub fn new(api_key: impl Into<String>, model: impl Into<String>) -> Self {
         Self {
-            inner: OpenAiClient::new("https://integrate.api.nvidia.com/v1", api_key, model),
+            inner: OpenAiClient::new_with_provider(
+                "https://integrate.api.nvidia.com/v1",
+                api_key,
+                model,
+                "nvidia",
+            ),
         }
     }
 
@@ -628,7 +659,7 @@ mod tests {
                 "completion_tokens": 5
             }
         });
-        let resp = parse_openai_response(raw, 100).unwrap();
+        let resp = parse_openai_response(raw, 100, "openai").unwrap();
         assert_eq!(resp.message.content.as_deref(), Some("Hello!"));
         assert_eq!(resp.input_tokens, 10);
         assert_eq!(resp.latency_ms, 100);
@@ -655,7 +686,7 @@ mod tests {
             }],
             "usage": {"prompt_tokens": 20, "completion_tokens": 15}
         });
-        let resp = parse_openai_response(raw, 200).unwrap();
+        let resp = parse_openai_response(raw, 200, "openai").unwrap();
         let tool_calls = resp.message.tool_calls.unwrap();
         assert_eq!(tool_calls.len(), 1);
         assert_eq!(tool_calls[0].function.name, "get_order");

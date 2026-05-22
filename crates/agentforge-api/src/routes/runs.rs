@@ -289,6 +289,16 @@ async fn run_evaluation_background(
         let _ = trace_repo.insert(trace).await;
     }
 
+    // If all traces errored (e.g. LLM API unavailable), surface a sample failure_reason
+    // as the run-level error_message so the UI can show something meaningful.
+    if scorecard.errors > 0 && scorecard.errors >= scorecard.total_scenarios {
+        let sample_failure = traces
+            .iter()
+            .find_map(|t| t.failure_reason.as_deref())
+            .unwrap_or("All traces failed — check LLM API credentials and quota");
+        let _ = eval_repo.set_error_message(run_id, sample_failure).await;
+    }
+
     let _ = eval_repo
         .save_scores(
             run_id,

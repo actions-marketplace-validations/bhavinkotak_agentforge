@@ -268,6 +268,25 @@ impl EvalRepo {
         Ok(())
     }
 
+    /// Set the run-level error_message without changing status.
+    /// Used to surface a sample trace failure reason on runs that completed
+    /// but had all (or partial) traces erroring due to LLM API issues.
+    pub async fn set_error_message(&self, id: Uuid, message: &str) -> Result<()> {
+        sqlx::query!(
+            r#"
+            UPDATE eval_runs
+            SET error_message = $2, updated_at = NOW()
+            WHERE id = $1
+            "#,
+            id,
+            message,
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(db_err)?;
+        Ok(())
+    }
+
     /// Cancel a run that is still pending/running, or hard-delete a completed/errored run.
     /// Returns `true` if a row was affected, `false` if the ID did not exist.
     pub async fn cancel_or_delete(&self, id: Uuid) -> Result<bool> {

@@ -60,12 +60,13 @@ export function ScorecardDisplay({ run }: Props) {
             All {run.error_count} trace{run.error_count !== 1 ? 's' : ''} errored — scores are unavailable.
           </p>
           <p className="mt-1 text-amber-700">
-            This usually means the agent's LLM API key is missing or invalid. Set a valid{' '}
-            <code className="rounded bg-amber-100 px-1 font-mono text-xs">OPENAI_API_KEY</code>{' '}
-            in your <code className="rounded bg-amber-100 px-1 font-mono text-xs">.env</code> file and re-run the evaluation.
+            The LLM API returned an error for every trace. Check that your API key is valid
+            and that you have sufficient quota for the configured provider.
           </p>
           {run.error_message && (
-            <p className="mt-1.5 font-mono text-xs text-amber-700 break-all">{run.error_message}</p>
+            <p className="mt-1.5 font-mono text-xs text-amber-700 break-all">
+              Sample error: {run.error_message}
+            </p>
           )}
         </div>
       )}
@@ -74,8 +75,7 @@ export function ScorecardDisplay({ run }: Props) {
       {someErrored && (
         <div className="rounded-md border border-yellow-200 bg-yellow-50 px-4 py-3 text-sm text-yellow-800">
           {run.error_count} of {run.scenario_count} traces errored — scores reflect only the{' '}
-          {run.completed_count} successful traces. Check your{' '}
-          <code className="rounded bg-yellow-100 px-1 font-mono text-xs">OPENAI_API_KEY</code>.
+          {run.completed_count} successful traces. Check your LLM API key and quota.
         </div>
       )}
 

@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE eval_runs\n            SET status = 'error'::eval_run_status, error_message = $2,\n                completed_at = NOW(), updated_at = NOW()\n            WHERE id = $1\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "f472744f3c1488c3900ab093b7f9e709b6d905ad4268d52b1076281f81989a58"
+}

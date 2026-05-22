@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE agent_versions SET is_champion = TRUE, promoted = TRUE WHERE id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "9d12f984f2e3b3dc2e09ce8ab76d198125fec067d4ff36f07bd0a1bff64d38c2"
+}

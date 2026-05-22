@@ -1,0 +1,94 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT id, name, version, sha, file_content, raw_content, format,\n                   promoted, is_champion, changelog, parent_sha, created_at, updated_at\n            FROM agent_versions\n            WHERE id = $1\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "version",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "sha",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "file_content",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 5,
+        "name": "raw_content",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "format",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "promoted",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 8,
+        "name": "is_champion",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 9,
+        "name": "changelog",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 10,
+        "name": "parent_sha",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 11,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 12,
+        "name": "updated_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "60155609c5de1d43033043f9a4edef45bc83f40b92cce363023871ca0205b355"
+}

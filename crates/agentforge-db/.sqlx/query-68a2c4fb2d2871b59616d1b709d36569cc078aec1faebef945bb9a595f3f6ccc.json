@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT scenario_id FROM traces WHERE run_id = $1 AND status = 'pass'::trace_status",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "scenario_id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "68a2c4fb2d2871b59616d1b709d36569cc078aec1faebef945bb9a595f3f6ccc"
+}

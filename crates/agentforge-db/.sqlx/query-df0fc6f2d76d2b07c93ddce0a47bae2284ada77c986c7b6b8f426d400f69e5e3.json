@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE eval_runs\n            SET aggregate_score = $2, pass_rate = $3,\n                task_completion = $4, tool_selection = $5,\n                argument_correctness = $6, path_efficiency = $7,\n                schema_compliance = $8, instruction_adherence = $9,\n                failure_clusters = $10, updated_at = NOW()\n            WHERE id = $1\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Float8",
+        "Float8",
+        "Float8",
+        "Float8",
+        "Float8",
+        "Float8",
+        "Float8",
+        "Float8",
+        "Jsonb"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "df0fc6f2d76d2b07c93ddce0a47bae2284ada77c986c7b6b8f426d400f69e5e3"
+}
