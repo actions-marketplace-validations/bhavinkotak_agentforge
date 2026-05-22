@@ -229,7 +229,11 @@ impl LlmClient for OpenAiClient {
     }
 }
 
-fn parse_openai_response(raw: serde_json::Value, latency_ms: u64, provider: &str) -> Result<LlmResponse> {
+fn parse_openai_response(
+    raw: serde_json::Value,
+    latency_ms: u64,
+    provider: &str,
+) -> Result<LlmResponse> {
     let choice = raw["choices"][0]
         .as_object()
         .ok_or_else(|| AgentForgeError::LlmError {

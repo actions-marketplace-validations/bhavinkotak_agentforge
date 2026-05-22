@@ -424,7 +424,11 @@ mod tests {
                 .get("properties")
                 .and_then(|p| p.as_object())
                 .expect(&format!("'{}' must have properties", tool.name));
-            assert!(!props.is_empty(), "Fallback tool '{}' must not have empty properties", tool.name);
+            assert!(
+                !props.is_empty(),
+                "Fallback tool '{}' must not have empty properties",
+                tool.name
+            );
         }
     }
 }

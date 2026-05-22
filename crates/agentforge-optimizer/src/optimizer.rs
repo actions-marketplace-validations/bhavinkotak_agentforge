@@ -332,8 +332,12 @@ mod tests {
         ];
         let variant = reorder_instructions(&agent, "sha");
         // "Never share PII." should be first in constraints
-        assert!(variant.agent.constraints[0].to_lowercase().starts_with("never"),
-            "Never constraints must come first after reorder");
+        assert!(
+            variant.agent.constraints[0]
+                .to_lowercase()
+                .starts_with("never"),
+            "Never constraints must come first after reorder"
+        );
     }
 
     #[test]
@@ -343,8 +347,10 @@ mod tests {
         // Should not panic
         let variant = reorder_instructions(&agent, "sha");
         // Without constraints, prompt should remain unchanged (no "CRITICAL RULES" prefix)
-        assert!(!variant.agent.system_prompt.starts_with("CRITICAL RULES"),
-            "With no constraints, system_prompt should not get CRITICAL RULES prefix");
+        assert!(
+            !variant.agent.system_prompt.starts_with("CRITICAL RULES"),
+            "With no constraints, system_prompt should not get CRITICAL RULES prefix"
+        );
     }
 
     #[test]
@@ -352,8 +358,10 @@ mod tests {
         let agent = make_agent();
         let original = agent.system_prompt.clone();
         let variant = reorder_instructions(&agent, "sha");
-        assert!(variant.agent.system_prompt.contains(&original),
-            "Original system prompt must be preserved in reordered variant");
+        assert!(
+            variant.agent.system_prompt.contains(&original),
+            "Original system prompt must be preserved in reordered variant"
+        );
     }
 
     #[test]
@@ -388,12 +396,18 @@ mod tests {
 
     #[test]
     fn mutation_type_display_few_shot_injection() {
-        assert_eq!(MutationType::FewShotInjection.to_string(), "few_shot_injection");
+        assert_eq!(
+            MutationType::FewShotInjection.to_string(),
+            "few_shot_injection"
+        );
     }
 
     #[test]
     fn mutation_type_display_instruction_reorder() {
-        assert_eq!(MutationType::InstructionReorder.to_string(), "instruction_reorder");
+        assert_eq!(
+            MutationType::InstructionReorder.to_string(),
+            "instruction_reorder"
+        );
     }
 
     #[test]
@@ -460,7 +474,10 @@ mod tests {
             .await
             .unwrap();
         for v in &result.variants {
-            assert!(!v.description.is_empty(), "Variant description must not be empty");
+            assert!(
+                !v.description.is_empty(),
+                "Variant description must not be empty"
+            );
         }
     }
 
@@ -480,8 +497,10 @@ mod tests {
             .await
             .unwrap();
         for v in &result.variants {
-            assert_eq!(v.parent_sha, "parent_sha_42",
-                "All variants must reference the correct parent SHA");
+            assert_eq!(
+                v.parent_sha, "parent_sha_42",
+                "All variants must reference the correct parent SHA"
+            );
         }
     }
 
@@ -501,8 +520,10 @@ mod tests {
             .await
             .unwrap();
         for v in &result.variants {
-            assert_eq!(v.agent.name, "test-agent",
-                "Agent name must be preserved across variants");
+            assert_eq!(
+                v.agent.name, "test-agent",
+                "Agent name must be preserved across variants"
+            );
         }
     }
 
@@ -523,9 +544,14 @@ mod tests {
             .await
             .unwrap();
         // At least one variant must be an InstructionReorder (the fallback)
-        let has_reorder = result.variants.iter()
+        let has_reorder = result
+            .variants
+            .iter()
             .any(|v| v.mutation_type == MutationType::InstructionReorder);
-        assert!(has_reorder, "Without LLM, InstructionReorder fallback must be applied");
+        assert!(
+            has_reorder,
+            "Without LLM, InstructionReorder fallback must be applied"
+        );
     }
 
     #[tokio::test]
@@ -536,17 +562,22 @@ mod tests {
             min_variants: 2,
             max_variants: 10,
             llm_api_key: "".to_string(),
-            few_shot_min_traces: 50,  // requires 50 passing traces
+            few_shot_min_traces: 50, // requires 50 passing traces
             ..Default::default()
         };
         let optimizer = Optimizer::new(config);
         let result = optimizer
-            .generate_variants(&agent, &scorecard, &[], "sha")  // passing_traces = []
+            .generate_variants(&agent, &scorecard, &[], "sha") // passing_traces = []
             .await
             .unwrap();
-        let has_few_shot = result.mutation_types_applied.iter()
+        let has_few_shot = result
+            .mutation_types_applied
+            .iter()
             .any(|m| *m == MutationType::FewShotInjection);
-        assert!(!has_few_shot, "FewShotInjection must not be applied when insufficient passing traces");
+        assert!(
+            !has_few_shot,
+            "FewShotInjection must not be applied when insufficient passing traces"
+        );
     }
 
     #[tokio::test]
@@ -554,8 +585,8 @@ mod tests {
         // Pass/high scores so no mutation conditions trigger
         let agent = {
             let mut a = make_agent();
-            a.tools = vec![];  // no tools → tool description rewrite skipped
-            a.output_schema = None;  // no schema → schema tighten skipped
+            a.tools = vec![]; // no tools → tool description rewrite skipped
+            a.output_schema = None; // no schema → schema tighten skipped
             a
         };
         let scorecard = make_scorecard(0.95, 0.95, 0.95, 0.95, 0.95, 0.95, 0.95);
@@ -571,7 +602,9 @@ mod tests {
             .generate_variants(&agent, &scorecard, &[], "sha")
             .await
             .unwrap();
-        assert!(result.variants.len() >= 3,
-            "min_variants must be satisfied even when no mutations apply");
+        assert!(
+            result.variants.len() >= 3,
+            "min_variants must be satisfied even when no mutations apply"
+        );
     }
 }

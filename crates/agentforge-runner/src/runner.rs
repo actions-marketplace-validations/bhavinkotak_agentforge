@@ -429,10 +429,7 @@ fn simulate_tool_result(tool_name: &str, args: &serde_json::Value) -> serde_json
         .get("file_path")
         .and_then(|v| v.as_str())
         .unwrap_or(".github/workflows/ci.yml");
-    let command = args
-        .get("command")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
+    let command = args.get("command").and_then(|v| v.as_str()).unwrap_or("");
     let name_lower = tool_name.to_lowercase();
 
     // GitHub search/API
@@ -458,7 +455,9 @@ fn simulate_tool_result(tool_name: &str, args: &serde_json::Value) -> serde_json
     }
 
     // File search
-    if name_lower.contains("filesearch") || (name_lower.contains("search") && name_lower.contains("file")) {
+    if name_lower.contains("filesearch")
+        || (name_lower.contains("search") && name_lower.contains("file"))
+    {
         return serde_json::json!({
             "files": [
                 ".github/workflows/ci.yml",
@@ -727,12 +726,16 @@ mod tests {
     #[test]
     fn simulate_github_returns_results_array() {
         let result = simulate_tool_result("github_search", &serde_json::json!({"query": "ci.yml"}));
-        assert!(result["results"].is_array(), "github_search must return results array");
+        assert!(
+            result["results"].is_array(),
+            "github_search must return results array"
+        );
     }
 
     #[test]
     fn simulate_github_results_are_non_empty() {
-        let result = simulate_tool_result("github_search", &serde_json::json!({"query": "workflows"}));
+        let result =
+            simulate_tool_result("github_search", &serde_json::json!({"query": "workflows"}));
         let arr = result["results"].as_array().unwrap();
         assert!(!arr.is_empty(), "results must not be empty");
     }
@@ -748,18 +751,27 @@ mod tests {
     fn simulate_github_result_content_contains_checkout_action() {
         let result = simulate_tool_result("github_search", &serde_json::json!({}));
         let content = result["results"][0]["content"].as_str().unwrap_or("");
-        assert!(content.contains("actions/checkout"), "GitHub mock must reference actions/checkout");
+        assert!(
+            content.contains("actions/checkout"),
+            "GitHub mock must reference actions/checkout"
+        );
     }
 
     #[test]
     fn simulate_github_returns_total_count() {
         let result = simulate_tool_result("github", &serde_json::json!({}));
-        assert!(result["total_count"].as_u64().is_some(), "must have total_count");
+        assert!(
+            result["total_count"].as_u64().is_some(),
+            "must have total_count"
+        );
     }
 
     #[test]
     fn simulate_github_echoes_query_arg() {
-        let result = simulate_tool_result("github_search", &serde_json::json!({"query": "my-special-query"}));
+        let result = simulate_tool_result(
+            "github_search",
+            &serde_json::json!({"query": "my-special-query"}),
+        );
         let q = result["query"].as_str().unwrap_or("");
         assert_eq!(q, "my-special-query", "query should be echoed back");
     }
@@ -775,7 +787,10 @@ mod tests {
     #[test]
     fn simulate_filesearch_returns_files_array() {
         let result = simulate_tool_result("fileSearch", &serde_json::json!({"query": "yml"}));
-        assert!(result["files"].is_array(), "fileSearch must return files array");
+        assert!(
+            result["files"].is_array(),
+            "fileSearch must return files array"
+        );
     }
 
     #[test]
@@ -795,7 +810,10 @@ mod tests {
             .filter_map(|v| v.as_str())
             .collect();
         let has_workflow = files.iter().any(|f| f.contains(".github/workflows"));
-        assert!(has_workflow, "fileSearch results should include workflow files");
+        assert!(
+            has_workflow,
+            "fileSearch results should include workflow files"
+        );
     }
 
     #[test]
@@ -809,7 +827,10 @@ mod tests {
     #[test]
     fn simulate_readfile_returns_content_field() {
         let result = simulate_tool_result("readFile", &serde_json::json!({"file_path": "ci.yml"}));
-        assert!(result["content"].is_string(), "readFile must return content field");
+        assert!(
+            result["content"].is_string(),
+            "readFile must return content field"
+        );
     }
 
     #[test]
@@ -821,22 +842,35 @@ mod tests {
 
     #[test]
     fn simulate_readfile_has_path_field() {
-        let result = simulate_tool_result("readFile", &serde_json::json!({"file_path": "readme.md"}));
+        let result =
+            simulate_tool_result("readFile", &serde_json::json!({"file_path": "readme.md"}));
         assert!(result["path"].is_string());
     }
 
     #[test]
     fn simulate_readfile_ci_yml_has_checkout() {
-        let result = simulate_tool_result("readFile", &serde_json::json!({"file_path": ".github/workflows/ci.yml"}));
+        let result = simulate_tool_result(
+            "readFile",
+            &serde_json::json!({"file_path": ".github/workflows/ci.yml"}),
+        );
         let content = result["content"].as_str().unwrap_or("");
-        assert!(content.contains("actions/checkout"), "ci.yml mock should reference actions/checkout");
+        assert!(
+            content.contains("actions/checkout"),
+            "ci.yml mock should reference actions/checkout"
+        );
     }
 
     #[test]
     fn simulate_readfile_package_json_has_test_script() {
-        let result = simulate_tool_result("readFile", &serde_json::json!({"file_path": "package.json"}));
+        let result = simulate_tool_result(
+            "readFile",
+            &serde_json::json!({"file_path": "package.json"}),
+        );
         let content = result["content"].as_str().unwrap_or("");
-        assert!(content.contains("test"), "package.json mock should reference test script");
+        assert!(
+            content.contains("test"),
+            "package.json mock should reference test script"
+        );
     }
 
     #[test]
@@ -856,7 +890,10 @@ mod tests {
     #[test]
     fn simulate_editfiles_has_lines_changed() {
         let result = simulate_tool_result("editFiles", &serde_json::json!({}));
-        assert!(result["lines_changed"].as_u64().is_some(), "editFiles must have lines_changed");
+        assert!(
+            result["lines_changed"].as_u64().is_some(),
+            "editFiles must have lines_changed"
+        );
     }
 
     #[test]
@@ -867,7 +904,10 @@ mod tests {
 
     #[test]
     fn simulate_editfiles_has_path_field() {
-        let result = simulate_tool_result("editFiles", &serde_json::json!({"file_path": "src/main.rs"}));
+        let result = simulate_tool_result(
+            "editFiles",
+            &serde_json::json!({"file_path": "src/main.rs"}),
+        );
         assert!(result["path"].is_string());
     }
 
@@ -875,13 +915,18 @@ mod tests {
 
     #[test]
     fn simulate_terminal_returns_stdout() {
-        let result = simulate_tool_result("runInTerminal", &serde_json::json!({"command": "npm test"}));
-        assert!(result["stdout"].is_string(), "terminal must have stdout field");
+        let result =
+            simulate_tool_result("runInTerminal", &serde_json::json!({"command": "npm test"}));
+        assert!(
+            result["stdout"].is_string(),
+            "terminal must have stdout field"
+        );
     }
 
     #[test]
     fn simulate_terminal_stdout_is_non_empty() {
-        let result = simulate_tool_result("runInTerminal", &serde_json::json!({"command": "npm ci"}));
+        let result =
+            simulate_tool_result("runInTerminal", &serde_json::json!({"command": "npm ci"}));
         let stdout = result["stdout"].as_str().unwrap_or("");
         assert!(!stdout.is_empty());
     }
@@ -894,24 +939,37 @@ mod tests {
 
     #[test]
     fn simulate_terminal_npm_returns_test_output() {
-        let result = simulate_tool_result("runInTerminal", &serde_json::json!({"command": "npm test"}));
+        let result =
+            simulate_tool_result("runInTerminal", &serde_json::json!({"command": "npm test"}));
         let stdout = result["stdout"].as_str().unwrap_or("");
-        assert!(stdout.contains("test") || stdout.contains("pass"), "npm test output should mention tests");
+        assert!(
+            stdout.contains("test") || stdout.contains("pass"),
+            "npm test output should mention tests"
+        );
     }
 
     #[test]
     fn simulate_terminal_git_returns_branch_info() {
-        let result = simulate_tool_result("runInTerminal", &serde_json::json!({"command": "git status"}));
+        let result = simulate_tool_result(
+            "runInTerminal",
+            &serde_json::json!({"command": "git status"}),
+        );
         let stdout = result["stdout"].as_str().unwrap_or("");
-        assert!(stdout.contains("branch") || stdout.contains("main"), "git status should mention branch");
+        assert!(
+            stdout.contains("branch") || stdout.contains("main"),
+            "git status should mention branch"
+        );
     }
 
     #[test]
     fn simulate_terminal_gh_act_returns_workflow_result() {
-        let result = simulate_tool_result("runInTerminal", &serde_json::json!({"command": "gh act"}));
+        let result =
+            simulate_tool_result("runInTerminal", &serde_json::json!({"command": "gh act"}));
         let stdout = result["stdout"].as_str().unwrap_or("");
-        assert!(stdout.contains("job") || stdout.contains("workflow") || stdout.contains("passed"),
-            "gh act output should mention workflow result");
+        assert!(
+            stdout.contains("job") || stdout.contains("workflow") || stdout.contains("passed"),
+            "gh act output should mention workflow result"
+        );
     }
 
     #[test]
@@ -925,7 +983,10 @@ mod tests {
     #[test]
     fn simulate_codebase_returns_matches() {
         let result = simulate_tool_result("codebase", &serde_json::json!({"query": "push"}));
-        assert!(result["matches"].is_array(), "codebase must return matches array");
+        assert!(
+            result["matches"].is_array(),
+            "codebase must return matches array"
+        );
     }
 
     #[test]
@@ -1040,11 +1101,10 @@ mod tests {
             .return_const("gpt-4o".to_string());
 
         let agent = make_simple_agent();
-        let runner = AgentRunner::new(
-            Arc::new(mock_llm),
-            RunnerConfig::default(),
-        );
-        let result = runner.run(&agent, vec![make_scenario(Uuid::new_v4())], None).await;
+        let runner = AgentRunner::new(Arc::new(mock_llm), RunnerConfig::default());
+        let result = runner
+            .run(&agent, vec![make_scenario(Uuid::new_v4())], None)
+            .await;
         assert!(result.traces[0].final_output.is_some());
         let text = result.traces[0].final_output.as_ref().unwrap()["response"]
             .as_str()
@@ -1057,33 +1117,30 @@ mod tests {
         use crate::llm::{ToolCall, ToolCallFunction};
         // Always return a tool call so the agent loops
         let mut mock_llm = MockTestLlm::new();
-        mock_llm
-            .expect_complete()
-            .times(..)
-            .returning(|_| {
-                Ok(LlmResponse {
-                    model: "gpt-4o".to_string(),
-                    message: LlmMessage {
-                        role: LlmRole::Assistant,
-                        content: None,
-                        tool_calls: Some(vec![ToolCall {
-                            id: "call_x".to_string(),
-                            tool_type: "function".to_string(),
-                            function: ToolCallFunction {
-                                name: "github_search".to_string(),
-                                arguments: r#"{}"#.to_string(),
-                            },
-                        }]),
-                        tool_call_id: None,
-                        name: None,
-                    },
-                    finish_reason: "tool_calls".to_string(),
-                    input_tokens: 10,
-                    output_tokens: 5,
-                    latency_ms: 50,
-                    raw_response: serde_json::json!({}),
-                })
-            });
+        mock_llm.expect_complete().times(..).returning(|_| {
+            Ok(LlmResponse {
+                model: "gpt-4o".to_string(),
+                message: LlmMessage {
+                    role: LlmRole::Assistant,
+                    content: None,
+                    tool_calls: Some(vec![ToolCall {
+                        id: "call_x".to_string(),
+                        tool_type: "function".to_string(),
+                        function: ToolCallFunction {
+                            name: "github_search".to_string(),
+                            arguments: r#"{}"#.to_string(),
+                        },
+                    }]),
+                    tool_call_id: None,
+                    name: None,
+                },
+                finish_reason: "tool_calls".to_string(),
+                input_tokens: 10,
+                output_tokens: 5,
+                latency_ms: 50,
+                raw_response: serde_json::json!({}),
+            })
+        });
         mock_llm
             .expect_provider_name()
             .return_const("openai".to_string());
@@ -1098,7 +1155,9 @@ mod tests {
             ..Default::default()
         };
         let runner = AgentRunner::new(Arc::new(mock_llm), config);
-        let result = runner.run(&agent, vec![make_scenario(Uuid::new_v4())], None).await;
+        let result = runner
+            .run(&agent, vec![make_scenario(Uuid::new_v4())], None)
+            .await;
 
         assert_eq!(result.traces.len(), 1);
         // Agent ran exactly max_turns (3) LLM calls
@@ -1138,15 +1197,12 @@ mod tests {
     #[tokio::test]
     async fn runner_error_trace_has_failure_reason() {
         let mut mock_llm = MockTestLlm::new();
-        mock_llm
-            .expect_complete()
-            .times(..)
-            .returning(|_| {
-                Err(AgentForgeError::LlmError {
-                    provider: "openai".to_string(),
-                    message: "timeout".to_string(),
-                })
-            });
+        mock_llm.expect_complete().times(..).returning(|_| {
+            Err(AgentForgeError::LlmError {
+                provider: "openai".to_string(),
+                message: "timeout".to_string(),
+            })
+        });
         mock_llm
             .expect_provider_name()
             .return_const("openai".to_string());
@@ -1157,9 +1213,14 @@ mod tests {
         let agent = make_simple_agent();
         let runner = AgentRunner::new(
             Arc::new(mock_llm),
-            RunnerConfig { max_retries: 0, ..Default::default() },
+            RunnerConfig {
+                max_retries: 0,
+                ..Default::default()
+            },
         );
-        let result = runner.run(&agent, vec![make_scenario(Uuid::new_v4())], None).await;
+        let result = runner
+            .run(&agent, vec![make_scenario(Uuid::new_v4())], None)
+            .await;
         assert_eq!(result.traces[0].status, TraceStatus::Error);
         assert!(result.traces[0].failure_reason.is_some());
         let reason = result.traces[0].failure_reason.as_ref().unwrap();

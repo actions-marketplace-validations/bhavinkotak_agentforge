@@ -57,7 +57,10 @@ pub fn classify_failure_cluster(
     let candidates = [
         (scores.task_completion, FailureCluster::PrematureStop),
         (scores.tool_selection, FailureCluster::WrongTool),
-        (scores.instruction_adherence, FailureCluster::ConstraintBreach),
+        (
+            scores.instruction_adherence,
+            FailureCluster::ConstraintBreach,
+        ),
     ];
 
     candidates
@@ -206,8 +209,11 @@ mod tests {
             path_efficiency: 0.75,
         };
         let cluster = classify_failure_cluster(&trace, &scores, &[]);
-        assert_ne!(cluster, FailureCluster::NoFailure,
-            "Fail trace must never get NoFailure cluster");
+        assert_ne!(
+            cluster,
+            FailureCluster::NoFailure,
+            "Fail trace must never get NoFailure cluster"
+        );
     }
 
     #[test]
@@ -222,8 +228,11 @@ mod tests {
             path_efficiency: 0.9,
         };
         let cluster = classify_failure_cluster(&trace, &scores, &[]);
-        assert_ne!(cluster, FailureCluster::NoFailure,
-            "ReviewNeeded trace must never get NoFailure cluster");
+        assert_ne!(
+            cluster,
+            FailureCluster::NoFailure,
+            "ReviewNeeded trace must never get NoFailure cluster"
+        );
     }
 
     // ── Weakest-dimension fallback tests ─────────────────────────────────────
@@ -241,8 +250,11 @@ mod tests {
             path_efficiency: 0.5,
         };
         let cluster = classify_failure_cluster(&trace, &scores, &[]);
-        assert_eq!(cluster, FailureCluster::PrematureStop,
-            "Weakest task_completion should yield PrematureStop");
+        assert_eq!(
+            cluster,
+            FailureCluster::PrematureStop,
+            "Weakest task_completion should yield PrematureStop"
+        );
     }
 
     #[test]
@@ -257,8 +269,11 @@ mod tests {
             path_efficiency: 0.5,
         };
         let cluster = classify_failure_cluster(&trace, &scores, &[]);
-        assert_eq!(cluster, FailureCluster::WrongTool,
-            "Weakest tool_selection should yield WrongTool");
+        assert_eq!(
+            cluster,
+            FailureCluster::WrongTool,
+            "Weakest tool_selection should yield WrongTool"
+        );
     }
 
     #[test]
@@ -273,8 +288,11 @@ mod tests {
             path_efficiency: 0.6,
         };
         let cluster = classify_failure_cluster(&trace, &scores, &[]);
-        assert_eq!(cluster, FailureCluster::ConstraintBreach,
-            "Weakest instruction_adherence should yield ConstraintBreach");
+        assert_eq!(
+            cluster,
+            FailureCluster::ConstraintBreach,
+            "Weakest instruction_adherence should yield ConstraintBreach"
+        );
     }
 
     // ── Hard-failure priority tests ───────────────────────────────────────────
@@ -287,7 +305,7 @@ mod tests {
             task_completion: 0.2,
             tool_selection: 0.9,
             argument_correctness: 0.9,
-            schema_compliance: 0.2,  // < 0.3
+            schema_compliance: 0.2, // < 0.3
             instruction_adherence: 0.9,
             path_efficiency: 0.9,
         };
@@ -304,7 +322,7 @@ mod tests {
         let scores = DimensionScores {
             task_completion: 0.3,
             tool_selection: 0.3,
-            argument_correctness: 0.1,  // < 0.3 hard threshold
+            argument_correctness: 0.1, // < 0.3 hard threshold
             schema_compliance: 0.9,
             instruction_adherence: 0.3,
             path_efficiency: 0.3,
@@ -352,7 +370,11 @@ mod tests {
         let trace = make_empty_trace(TraceStatus::Fail);
         let scores = make_scores(0.7, 0.9, 0.9, 0.9, 0.7);
         assert_eq!(
-            classify_failure_cluster(&trace, &scores, &["instruction adherence failed".to_string()]),
+            classify_failure_cluster(
+                &trace,
+                &scores,
+                &["instruction adherence failed".to_string()]
+            ),
             FailureCluster::ConstraintBreach
         );
     }

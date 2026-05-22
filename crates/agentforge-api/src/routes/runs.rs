@@ -8,7 +8,9 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use uuid::Uuid;
 
-use agentforge_core::{AgentFileFormat, AgentForgeError, AgentVersion, EvalRun, EvalRunStatus, Trace};
+use agentforge_core::{
+    AgentFileFormat, AgentForgeError, AgentVersion, EvalRun, EvalRunStatus, Trace,
+};
 use agentforge_db::{
     agent_repo::AgentRepo, eval_repo::EvalRepo, scenario_repo::ScenarioRepo, trace_repo::TraceRepo,
 };
@@ -378,8 +380,7 @@ async fn run_optimization_cycle(
     );
 
     // Quick-eval: use up to 10 scenarios from the original run to rank variants fast.
-    let eval_scenarios: Vec<agentforge_core::Scenario> =
-        scenarios.into_iter().take(10).collect();
+    let eval_scenarios: Vec<agentforge_core::Scenario> = scenarios.into_iter().take(10).collect();
 
     let mut best_aggregate = scorecard.aggregate_score;
     let mut best_version: Option<AgentVersion> = None;
@@ -434,8 +435,7 @@ async fn run_optimization_cycle(
                     compute_sha256(&json)
                 },
                 file_content: variant.agent.clone(),
-                raw_content: serde_json::to_string_pretty(&variant.agent)
-                    .unwrap_or_default(),
+                raw_content: serde_json::to_string_pretty(&variant.agent).unwrap_or_default(),
                 format: AgentFileFormat::NativeYaml,
                 promoted: false,
                 is_champion: false,
@@ -815,8 +815,11 @@ mod tests {
             created_at: Utc::now(),
         };
         let json = serde_json::to_value(&resp).unwrap();
-        assert!(json["aggregate_score"].is_number(),
-            "aggregate_score must serialize as a number, got: {:?}", json["aggregate_score"]);
+        assert!(
+            json["aggregate_score"].is_number(),
+            "aggregate_score must serialize as a number, got: {:?}",
+            json["aggregate_score"]
+        );
         assert!((json["aggregate_score"].as_f64().unwrap() - 0.87).abs() < 1e-9);
     }
 
@@ -830,8 +833,10 @@ mod tests {
             created_at: Utc::now(),
         };
         let json = serde_json::to_value(&resp).unwrap();
-        assert!(json["aggregate_score"].is_null(),
-            "aggregate_score: None must serialize as null");
+        assert!(
+            json["aggregate_score"].is_null(),
+            "aggregate_score: None must serialize as null"
+        );
     }
 
     #[test]
@@ -873,7 +878,7 @@ mod tests {
             scenario_count: 50,
             completed_count: 0,
             error_count: 0,
-            aggregate_score: None,  // Not yet scored
+            aggregate_score: None, // Not yet scored
             pass_rate: None,
             scores: None,
             failure_clusters: None,
@@ -886,8 +891,10 @@ mod tests {
             updated_at: Utc::now(),
         };
         let resp = RunResponse::from(eval_run);
-        assert!(resp.aggregate_score.is_none(),
-            "aggregate_score must be None when EvalRun has no score yet");
+        assert!(
+            resp.aggregate_score.is_none(),
+            "aggregate_score must be None when EvalRun has no score yet"
+        );
     }
 
     #[test]
@@ -902,10 +909,22 @@ mod tests {
         let json = serde_json::to_value(&resp).unwrap();
         let obj = json.as_object().unwrap();
         assert!(obj.contains_key("id"), "RunResponse must have 'id' field");
-        assert!(obj.contains_key("agent_id"), "RunResponse must have 'agent_id' field");
-        assert!(obj.contains_key("status"), "RunResponse must have 'status' field");
-        assert!(obj.contains_key("aggregate_score"), "RunResponse must have 'aggregate_score' field");
-        assert!(obj.contains_key("created_at"), "RunResponse must have 'created_at' field");
+        assert!(
+            obj.contains_key("agent_id"),
+            "RunResponse must have 'agent_id' field"
+        );
+        assert!(
+            obj.contains_key("status"),
+            "RunResponse must have 'status' field"
+        );
+        assert!(
+            obj.contains_key("aggregate_score"),
+            "RunResponse must have 'aggregate_score' field"
+        );
+        assert!(
+            obj.contains_key("created_at"),
+            "RunResponse must have 'created_at' field"
+        );
     }
 
     // ── auto_optimize field ───────────────────────────────────────────────────
@@ -916,7 +935,10 @@ mod tests {
             "agent_id": "550e8400-e29b-41d4-a716-446655440000"
         });
         let req: StartRunRequest = serde_json::from_value(json).unwrap();
-        assert!(req.auto_optimize.is_none(), "auto_optimize should default to None when not provided");
+        assert!(
+            req.auto_optimize.is_none(),
+            "auto_optimize should default to None when not provided"
+        );
     }
 
     #[test]
@@ -987,7 +1009,11 @@ mod tests {
             EvalRunStatus::Cancelled.to_string(),
         ];
         let unique: std::collections::HashSet<_> = statuses.iter().collect();
-        assert_eq!(unique.len(), statuses.len(), "All EvalRunStatus Display values must be distinct");
+        assert_eq!(
+            unique.len(),
+            statuses.len(),
+            "All EvalRunStatus Display values must be distinct"
+        );
     }
 
     // ── Pagination bounds ──────────────────────────────────────────────────────
@@ -1002,7 +1028,8 @@ mod tests {
 
     #[test]
     fn list_runs_limit_clamps_at_200() {
-        let query: ListRunsQuery = serde_json::from_value(serde_json::json!({"limit": 9999})).unwrap();
+        let query: ListRunsQuery =
+            serde_json::from_value(serde_json::json!({"limit": 9999})).unwrap();
         let limit = query.limit.unwrap_or(50).min(200);
         assert_eq!(limit, 200);
     }

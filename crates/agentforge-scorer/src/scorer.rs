@@ -497,8 +497,11 @@ mod tests {
 
         assert_eq!(wrong_tool.count, 2);
         // 2 out of 5 total = 40%, NOT 100% of failed
-        assert!((wrong_tool.percentage - 0.4).abs() < 1e-9,
-            "Expected 0.4 (40% of all scenarios), got {}", wrong_tool.percentage);
+        assert!(
+            (wrong_tool.percentage - 0.4).abs() < 1e-9,
+            "Expected 0.4 (40% of all scenarios), got {}",
+            wrong_tool.percentage
+        );
     }
 
     // ── Additional regression and edge-case tests ─────────────────────────────
@@ -516,20 +519,31 @@ mod tests {
         traces[0].failure_cluster = FailureCluster::PrematureStop;
 
         let summary = build_failure_cluster_summary(&traces);
-        assert!(!summary.is_empty(), "ReviewNeeded trace should produce a non-empty cluster summary");
+        assert!(
+            !summary.is_empty(),
+            "ReviewNeeded trace should produce a non-empty cluster summary"
+        );
         let cluster_for_review = summary
             .iter()
             .find(|s| s.cluster == FailureCluster::PrematureStop);
-        assert!(cluster_for_review.is_some(), "PrematureStop cluster must appear for ReviewNeeded trace");
+        assert!(
+            cluster_for_review.is_some(),
+            "PrematureStop cluster must appear for ReviewNeeded trace"
+        );
     }
 
     /// All-pass traces must produce an empty cluster summary.
     #[test]
     fn all_passing_traces_yield_empty_cluster_summary() {
         let run_id = Uuid::new_v4();
-        let traces: Vec<_> = (0..5).map(|_| make_passing_trace(run_id, Uuid::new_v4())).collect();
+        let traces: Vec<_> = (0..5)
+            .map(|_| make_passing_trace(run_id, Uuid::new_v4()))
+            .collect();
         let summary = build_failure_cluster_summary(&traces);
-        assert!(summary.is_empty(), "No failures should produce an empty cluster summary");
+        assert!(
+            summary.is_empty(),
+            "No failures should produce an empty cluster summary"
+        );
     }
 
     /// build_failure_cluster_summary never includes NoFailure cluster for failing traces.
@@ -551,14 +565,19 @@ mod tests {
         // preventing NoFailure from being stored for Fail traces.
         // Here we just verify the summary is well-formed.
         let total_count: u32 = summary.iter().map(|s| s.count).sum();
-        assert_eq!(total_count, 1, "Exactly 1 failed trace should appear in summary");
+        assert_eq!(
+            total_count, 1,
+            "Exactly 1 failed trace should appear in summary"
+        );
     }
 
     /// Cluster summary count matches number of failed traces.
     #[test]
     fn cluster_summary_count_matches_failed_traces() {
         let run_id = Uuid::new_v4();
-        let mut traces: Vec<_> = (0..10).map(|_| make_passing_trace(run_id, Uuid::new_v4())).collect();
+        let mut traces: Vec<_> = (0..10)
+            .map(|_| make_passing_trace(run_id, Uuid::new_v4()))
+            .collect();
         // 4 failures across 2 clusters
         traces[0].status = TraceStatus::Fail;
         traces[0].failure_cluster = FailureCluster::WrongTool;
@@ -591,7 +610,9 @@ mod tests {
     #[test]
     fn cluster_percentage_never_exceeds_one() {
         let run_id = Uuid::new_v4();
-        let mut traces: Vec<_> = (0..3).map(|_| make_passing_trace(run_id, Uuid::new_v4())).collect();
+        let mut traces: Vec<_> = (0..3)
+            .map(|_| make_passing_trace(run_id, Uuid::new_v4()))
+            .collect();
         traces[0].status = TraceStatus::Fail;
         traces[0].failure_cluster = FailureCluster::WrongTool;
         traces[1].status = TraceStatus::Fail;
@@ -599,7 +620,11 @@ mod tests {
 
         let summary = build_failure_cluster_summary(&traces);
         for s in &summary {
-            assert!(s.percentage <= 1.0, "percentage must never exceed 1.0, got {}", s.percentage);
+            assert!(
+                s.percentage <= 1.0,
+                "percentage must never exceed 1.0, got {}",
+                s.percentage
+            );
         }
     }
 
@@ -656,16 +681,23 @@ mod tests {
     #[test]
     fn cluster_summary_sample_scenarios_capped_at_three() {
         let run_id = Uuid::new_v4();
-        let mut traces: Vec<_> = (0..6).map(|_| make_passing_trace(run_id, Uuid::new_v4())).collect();
+        let mut traces: Vec<_> = (0..6)
+            .map(|_| make_passing_trace(run_id, Uuid::new_v4()))
+            .collect();
         for t in &mut traces {
             t.status = TraceStatus::Fail;
             t.failure_cluster = FailureCluster::WrongTool;
         }
         let summary = build_failure_cluster_summary(&traces);
-        let wrong_tool = summary.iter().find(|s| s.cluster == FailureCluster::WrongTool).unwrap();
+        let wrong_tool = summary
+            .iter()
+            .find(|s| s.cluster == FailureCluster::WrongTool)
+            .unwrap();
         assert_eq!(wrong_tool.count, 6);
-        assert!(wrong_tool.sample_scenarios.len() <= 3,
-            "sample_scenarios should be capped at 3");
+        assert!(
+            wrong_tool.sample_scenarios.len() <= 3,
+            "sample_scenarios should be capped at 3"
+        );
     }
 
     /// score_trace sets aggregate_score for a non-error trace.
@@ -680,8 +712,13 @@ mod tests {
             judge_api_key: "".to_string(),
             ..Default::default()
         };
-        score_trace(&mut trace, &scenario, &agent, &config).await.unwrap();
-        assert!(trace.aggregate_score.is_some(), "aggregate_score must be set after scoring");
+        score_trace(&mut trace, &scenario, &agent, &config)
+            .await
+            .unwrap();
+        assert!(
+            trace.aggregate_score.is_some(),
+            "aggregate_score must be set after scoring"
+        );
     }
 
     /// score_trace sets dimension scores.
@@ -696,8 +733,13 @@ mod tests {
             judge_api_key: "".to_string(),
             ..Default::default()
         };
-        score_trace(&mut trace, &scenario, &agent, &config).await.unwrap();
-        assert!(trace.scores.is_some(), "dimension scores must be set after scoring");
+        score_trace(&mut trace, &scenario, &agent, &config)
+            .await
+            .unwrap();
+        assert!(
+            trace.scores.is_some(),
+            "dimension scores must be set after scoring"
+        );
     }
 
     /// score_trace assigns a non-Pass status for traces with low output.
@@ -715,7 +757,9 @@ mod tests {
             judge_api_key: "".to_string(),
             ..Default::default()
         };
-        score_trace(&mut trace, &scenario, &agent, &config).await.unwrap();
+        score_trace(&mut trace, &scenario, &agent, &config)
+            .await
+            .unwrap();
         // aggregate_score must be set regardless of status
         assert!(trace.aggregate_score.is_some());
     }
