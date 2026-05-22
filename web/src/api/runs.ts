@@ -6,6 +6,7 @@ export interface StartRunRequest {
   scenario_count?: number
   concurrency?: number
   seed?: number
+  auto_optimize?: boolean
 }
 
 export const startRun = (req: StartRunRequest) =>

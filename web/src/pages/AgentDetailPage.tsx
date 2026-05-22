@@ -33,6 +33,7 @@ export function AgentDetailPage() {
   const [scenarios, setScenarios] = useState('100')
   const [concurrency, setConcurrency] = useState('10')
   const [seed, setSeed] = useState('42')
+  const [autoOptimize, setAutoOptimize] = useState(false)
 
   // Shadow form state
   const [candidateId, setCandidateId] = useState('')
@@ -54,6 +55,7 @@ export function AgentDetailPage() {
         scenario_count: parseInt(scenarios),
         concurrency: parseInt(concurrency),
         seed: parseInt(seed),
+        auto_optimize: autoOptimize,
       })
       push({ id: run.id, type: 'run', label: `Run for ${agentQ.data?.name}`, timestamp: Date.now() })
       navigate(`/runs/${run.id}`)
@@ -181,6 +183,18 @@ export function AgentDetailPage() {
                 <Input label="Concurrency" type="number" value={concurrency} onChange={e => setConcurrency(e.target.value)} min={1} max={50} />
                 <Input label="Seed" type="number" value={seed} onChange={e => setSeed(e.target.value)} />
               </div>
+              <label className="flex cursor-pointer items-center gap-2.5">
+                <div
+                  onClick={() => setAutoOptimize(v => !v)}
+                  className={`relative h-5 w-9 rounded-full transition-colors ${autoOptimize ? 'bg-blue-600' : 'bg-gray-300'}`}
+                >
+                  <span className={`absolute top-0.5 left-0.5 h-4 w-4 rounded-full bg-white shadow transition-transform ${autoOptimize ? 'translate-x-4' : ''}`} />
+                </div>
+                <span className="text-sm text-gray-700">
+                  Auto-Optimize
+                  <span className="ml-1 text-xs text-gray-400">(generate improved variants, save best as new version)</span>
+                </span>
+              </label>
               <Button type="submit" loading={runMut.isPending}>Start →</Button>
             </form>
           </CardContent>
