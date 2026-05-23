@@ -320,7 +320,7 @@ mod tests {
     fn reorder_puts_never_constraints_first() {
         let agent = make_agent();
         let variant = reorder_instructions(&agent, "sha_test");
-        assert!(variant.agent.system_prompt.starts_with("CRITICAL RULES"));
+        assert!(variant.agent.system_prompt.starts_with("Key Behavioral Rules"));
         assert!(variant.agent.system_prompt.contains("Never share"));
     }
 
@@ -728,7 +728,7 @@ mod tests {
         agent.constraints = vec!["Never do harm.".to_string()];
         let v = reorder_instructions(&agent, "sha");
         assert!(v.agent.system_prompt.contains("Never do harm."));
-        assert!(v.agent.system_prompt.starts_with("CRITICAL RULES"));
+        assert!(v.agent.system_prompt.starts_with("Key Behavioral Rules"));
     }
 
     #[test]
