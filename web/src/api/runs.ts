@@ -6,7 +6,12 @@ export interface StartRunRequest {
   scenario_count?: number
   concurrency?: number
   seed?: number
+  /** Enable iterative self-improvement loop (default: true on the server). */
   auto_optimize?: boolean
+  /** Target score 0.0–1.0 (default: 0.95). */
+  threshold?: number
+  /** Maximum optimization rounds (default: 5). */
+  max_opt_iterations?: number
 }
 
 export const startRun = (req: StartRunRequest) =>

@@ -2,8 +2,8 @@ use crate::db_err;
 use agentforge_core::{
     AgentForgeError, DimensionScores, EvalRun, EvalRunStatus, FailureClusterSummary, Result,
 };
-use chrono::Utc;
-use sqlx::PgPool;
+use chrono::{DateTime, Utc};
+use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
 pub struct EvalRepo {
@@ -51,20 +51,21 @@ impl EvalRepo {
     }
 
     pub async fn find_by_id(&self, id: Uuid) -> Result<EvalRun> {
-        let row = sqlx::query!(
+        // Use non-macro sqlx::query so new opt_* columns don't require .sqlx/ regeneration.
+        let row = sqlx::query(
             r#"
-            SELECT id, agent_id, scenario_set_id,
-                   status as "status: String",
+            SELECT id, agent_id, scenario_set_id, status::TEXT AS status,
                    scenario_count, completed_count, error_count,
                    aggregate_score, pass_rate,
                    task_completion, tool_selection, argument_correctness,
                    path_efficiency, schema_compliance, instruction_adherence,
                    failure_clusters, seed, concurrency, error_message,
-                   started_at, completed_at, created_at, updated_at
+                   started_at, completed_at, created_at, updated_at,
+                   opt_status, opt_rounds, opt_best_score, opt_best_agent_id
             FROM eval_runs WHERE id = $1
             "#,
-            id
         )
+        .bind(id)
         .fetch_optional(&self.pool)
         .await
         .map_err(db_err)?
@@ -73,14 +74,16 @@ impl EvalRepo {
             id: id.to_string(),
         })?;
 
-        let scores = if let (Some(tc), Some(ts), Some(ac), Some(pe), Some(sc), Some(ia)) = (
-            row.task_completion,
-            row.tool_selection,
-            row.argument_correctness,
-            row.path_efficiency,
-            row.schema_compliance,
-            row.instruction_adherence,
-        ) {
+        let tc: Option<f64> = row.get("task_completion");
+        let ts: Option<f64> = row.get("tool_selection");
+        let ac: Option<f64> = row.get("argument_correctness");
+        let pe: Option<f64> = row.get("path_efficiency");
+        let sc: Option<f64> = row.get("schema_compliance");
+        let ia: Option<f64> = row.get("instruction_adherence");
+
+        let scores = if let (Some(tc), Some(ts), Some(ac), Some(pe), Some(sc), Some(ia)) =
+            (tc, ts, ac, pe, sc, ia)
+        {
             Some(DimensionScores {
                 task_completion: tc,
                 tool_selection: ts,
@@ -93,32 +96,67 @@ impl EvalRepo {
             None
         };
 
-        let failure_clusters: Option<Vec<FailureClusterSummary>> = row
-            .failure_clusters
+        let clusters_json: Option<serde_json::Value> = row.get("failure_clusters");
+        let failure_clusters: Option<Vec<FailureClusterSummary>> = clusters_json
             .map(serde_json::from_value)
             .transpose()
             .map_err(|e| AgentForgeError::SerializationError(e.to_string()))?;
 
+        let status_str: String = row.get("status");
         Ok(EvalRun {
-            id: row.id,
-            agent_id: row.agent_id,
-            scenario_set_id: row.scenario_set_id,
-            status: parse_status(&row.status),
-            scenario_count: row.scenario_count as u32,
-            completed_count: row.completed_count as u32,
-            error_count: row.error_count as u32,
-            aggregate_score: row.aggregate_score,
-            pass_rate: row.pass_rate,
+            id: row.get("id"),
+            agent_id: row.get("agent_id"),
+            scenario_set_id: row.get("scenario_set_id"),
+            status: parse_status(&status_str),
+            scenario_count: row.get::<i32, _>("scenario_count") as u32,
+            completed_count: row.get::<i32, _>("completed_count") as u32,
+            error_count: row.get::<i32, _>("error_count") as u32,
+            aggregate_score: row.get("aggregate_score"),
+            pass_rate: row.get("pass_rate"),
             scores,
             failure_clusters,
-            seed: row.seed as u32,
-            concurrency: row.concurrency as u32,
-            error_message: row.error_message,
-            started_at: row.started_at,
-            completed_at: row.completed_at,
-            created_at: row.created_at,
-            updated_at: row.updated_at,
+            seed: row.get::<i32, _>("seed") as u32,
+            concurrency: row.get::<i32, _>("concurrency") as u32,
+            error_message: row.get("error_message"),
+            started_at: row.get::<Option<DateTime<Utc>>, _>("started_at"),
+            completed_at: row.get::<Option<DateTime<Utc>>, _>("completed_at"),
+            created_at: row.get("created_at"),
+            updated_at: row.get("updated_at"),
+            opt_status: row.get("opt_status"),
+            opt_rounds: row.get::<i32, _>("opt_rounds"),
+            opt_best_score: row.get("opt_best_score"),
+            opt_best_agent_id: row.get("opt_best_agent_id"),
         })
+    }
+
+    /// Update the iterative optimization loop tracking state on an eval run.
+    pub async fn update_opt_tracking(
+        &self,
+        id: Uuid,
+        status: &str,
+        rounds: i32,
+        best_score: Option<f64>,
+        best_agent_id: Option<Uuid>,
+    ) -> Result<()> {
+        sqlx::query(
+            r#"
+            UPDATE eval_runs
+            SET opt_status = $2, opt_rounds = $3,
+                opt_best_score = COALESCE($4, opt_best_score),
+                opt_best_agent_id = COALESCE($5, opt_best_agent_id),
+                updated_at = NOW()
+            WHERE id = $1
+            "#,
+        )
+        .bind(id)
+        .bind(status)
+        .bind(rounds)
+        .bind(best_score)
+        .bind(best_agent_id)
+        .execute(&self.pool)
+        .await
+        .map_err(db_err)?;
+        Ok(())
     }
 
     pub async fn update_status(&self, id: Uuid, status: &EvalRunStatus) -> Result<()> {

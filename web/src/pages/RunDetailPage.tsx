@@ -29,8 +29,11 @@ export function RunDetailPage() {
     queryFn: () => fetchRun(id!),
     enabled: !!id,
     refetchInterval: (query) => {
-      const s = query.state.data?.status
-      if (s === 'complete' || s === 'error') return false
+      const data = query.state.data
+      const evalDone = data?.status === 'complete' || data?.status === 'error'
+      const optRunning = data?.opt_status === 'running'
+      // Keep polling if eval is running, or eval is done but opt loop is still going.
+      if (evalDone && !optRunning) return false
       return 3000
     },
   })
@@ -102,6 +105,11 @@ export function RunDetailPage() {
           </div>
         )}
       </PollingCard>
+
+      {/* Optimization loop status */}
+      {run && run.opt_status && (
+        <OptimizationStatus run={run} />
+      )}
 
       {/* Error */}
       {isError && scorecardQ.data?.error_message && (
@@ -189,6 +197,56 @@ export function RunDetailPage() {
         </>
       )}
     </div>
+  )
+}
+
+function OptimizationStatus({ run }: { run: import('@/types').RunResponse }) {
+  const statusLabels: Record<string, string> = {
+    running: '🔄 Optimizing…',
+    converged: '✅ Converged',
+    no_improvement: '⏸️ No improvement found',
+    max_iterations: '🏁 Max rounds reached',
+    failed: '❌ Optimization failed',
+  }
+
+  const statusColors: Record<string, string> = {
+    running: 'border-blue-200 bg-blue-50',
+    converged: 'border-green-200 bg-green-50',
+    no_improvement: 'border-yellow-200 bg-yellow-50',
+    max_iterations: 'border-yellow-200 bg-yellow-50',
+    failed: 'border-red-200 bg-red-50',
+  }
+
+  const status = run.opt_status ?? ''
+  const label = statusLabels[status] ?? `Optimization: ${status}`
+  const colorClass = statusColors[status] ?? 'border-gray-200 bg-gray-50'
+
+  return (
+    <Card className={`border ${colorClass}`}>
+      <CardHeader><CardTitle>Self-Improvement Loop</CardTitle></CardHeader>
+      <CardContent className="space-y-2 text-sm">
+        <div className="flex items-center justify-between">
+          <span className="font-medium">{label}</span>
+          <span className="text-xs text-gray-500">Round {run.opt_rounds}</span>
+        </div>
+        {run.opt_best_score != null && (
+          <div className="text-xs text-gray-600">
+            Best score: <span className="font-semibold text-gray-900">{(run.opt_best_score * 100).toFixed(1)}%</span>
+          </div>
+        )}
+        {run.opt_best_agent_id && (
+          <div className="text-xs text-gray-600">
+            Best version:{' '}
+            <a
+              href={`/agents/${run.opt_best_agent_id}`}
+              className="font-mono text-blue-600 hover:underline"
+            >
+              {run.opt_best_agent_id.slice(0, 8)}…
+            </a>
+          </div>
+        )}
+      </CardContent>
+    </Card>
   )
 }
 

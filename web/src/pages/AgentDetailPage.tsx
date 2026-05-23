@@ -33,7 +33,9 @@ export function AgentDetailPage() {
   const [scenarios, setScenarios] = useState('100')
   const [concurrency, setConcurrency] = useState('10')
   const [seed, setSeed] = useState('42')
-  const [autoOptimize, setAutoOptimize] = useState(false)
+  const [autoOptimize, setAutoOptimize] = useState(true)
+  const [threshold, setThreshold] = useState('0.95')
+  const [maxIter, setMaxIter] = useState('5')
 
   // Shadow form state
   const [candidateId, setCandidateId] = useState('')
@@ -56,6 +58,8 @@ export function AgentDetailPage() {
         concurrency: parseInt(concurrency),
         seed: parseInt(seed),
         auto_optimize: autoOptimize,
+        threshold: parseFloat(threshold),
+        max_opt_iterations: parseInt(maxIter),
       })
       push({ id: run.id, type: 'run', label: `Run for ${agentQ.data?.name}`, timestamp: Date.now() })
       navigate(`/runs/${run.id}`)
@@ -192,9 +196,30 @@ export function AgentDetailPage() {
                 </div>
                 <span className="text-sm text-gray-700">
                   Auto-Optimize
-                  <span className="ml-1 text-xs text-gray-400">(generate improved variants, save best as new version)</span>
+                  <span className="ml-1 text-xs text-gray-400">(iteratively improve agent until score ≥ threshold)</span>
                 </span>
               </label>
+              {autoOptimize && (
+                <div className="grid grid-cols-2 gap-3">
+                  <Input
+                    label="Target Score (0.0–1.0)"
+                    type="number"
+                    value={threshold}
+                    onChange={e => setThreshold(e.target.value)}
+                    min={0}
+                    max={1}
+                    step={0.01}
+                  />
+                  <Input
+                    label="Max Opt Rounds"
+                    type="number"
+                    value={maxIter}
+                    onChange={e => setMaxIter(e.target.value)}
+                    min={1}
+                    max={20}
+                  />
+                </div>
+              )}
               <Button type="submit" loading={runMut.isPending}>Start →</Button>
             </form>
           </CardContent>

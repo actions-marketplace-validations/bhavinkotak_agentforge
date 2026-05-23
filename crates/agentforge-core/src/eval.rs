@@ -23,6 +23,16 @@ pub struct EvalRun {
     pub completed_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    // ── Self-improvement loop tracking ────────────────────────────────────────
+    /// Optimization loop state: `running` | `converged` | `no_improvement` |
+    /// `max_iterations` | `failed`. `None` means optimization was not requested.
+    pub opt_status: Option<String>,
+    /// Number of completed optimization rounds (0 = not started).
+    pub opt_rounds: i32,
+    /// Best aggregate score achieved across all optimization rounds.
+    pub opt_best_score: Option<f64>,
+    /// UUID of the best agent version saved during the optimization loop.
+    pub opt_best_agent_id: Option<Uuid>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

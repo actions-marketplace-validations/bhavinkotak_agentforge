@@ -626,6 +626,10 @@ async fn cmd_run(
             completed_at: None,
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
+            opt_status: None,
+            opt_rounds: 0,
+            opt_best_score: None,
+            opt_best_agent_id: None,
         };
         let eval_run = eval_repo.insert(&new_run).await?;
         scenario_repo.insert_batch(&scenarios).await?;

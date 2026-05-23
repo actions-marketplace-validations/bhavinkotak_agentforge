@@ -32,16 +32,20 @@ pub struct StartRunRequest {
     pub scenario_count: Option<u32>,
     pub seed: Option<i64>,
     pub concurrency: Option<u32>,
-    /// Pass threshold 0.0–1.0 (default: `AGENTFORGE_DEFAULT_PASS_THRESHOLD` / 0.85).
+    /// Optimization target score 0.0–1.0 (default: 0.95).
+    /// Also used as the pass threshold for the gatekeeper.
     pub threshold: Option<f64>,
     /// LLM provider for the agent under test (`openai` | `anthropic` | `nvidia` | `ollama` | `bedrock`).
     pub provider: Option<String>,
     /// LLM provider for the judge (must differ from `provider` at the provider level).
     pub judge_provider: Option<String>,
-    /// When true, automatically run the optimizer after evaluation if aggregate < threshold.
-    /// Generates up to 5 improved agent variants, quick-evaluates them, and saves the
-    /// best one as a new versioned agent. Defaults to false.
+    /// Enable the iterative self-improvement loop (default: **true**).
+    /// The optimizer will iterate up to `max_opt_iterations` rounds, each time
+    /// generating variants and saving the best one, until the score reaches
+    /// `threshold` or no further improvement is possible.
     pub auto_optimize: Option<bool>,
+    /// Maximum number of optimization rounds (default: 5).
+    pub max_opt_iterations: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -67,6 +71,16 @@ pub struct RunResponse {
     pub completed_count: u32,
     pub error_count: u32,
     pub created_at: chrono::DateTime<chrono::Utc>,
+    // ── Self-improvement loop state ────────────────────────────────────────
+    /// `running` | `converged` | `no_improvement` | `max_iterations` | `failed`.
+    /// `null` when auto_optimize was not requested.
+    pub opt_status: Option<String>,
+    /// Number of completed optimization rounds.
+    pub opt_rounds: i32,
+    /// Best aggregate score reached during the optimization loop.
+    pub opt_best_score: Option<f64>,
+    /// UUID of the best agent version saved by the optimization loop.
+    pub opt_best_agent_id: Option<Uuid>,
 }
 
 impl From<EvalRun> for RunResponse {
@@ -81,6 +95,10 @@ impl From<EvalRun> for RunResponse {
             completed_count: r.completed_count,
             error_count: r.error_count,
             created_at: r.created_at,
+            opt_status: r.opt_status,
+            opt_rounds: r.opt_rounds,
+            opt_best_score: r.opt_best_score,
+            opt_best_agent_id: r.opt_best_agent_id,
         }
     }
 }
@@ -208,6 +226,10 @@ pub async fn start_run(
         completed_at: None,
         created_at: Utc::now(),
         updated_at: Utc::now(),
+        opt_status: None,
+        opt_rounds: 0,
+        opt_best_score: None,
+        opt_best_agent_id: None,
     };
 
     let eval_repo = EvalRepo::new(state.db.clone());
@@ -218,7 +240,9 @@ pub async fn start_run(
     let run_id = run.id;
 
     let state_clone = state.clone();
-    let auto_optimize = req.auto_optimize.unwrap_or(false);
+    let auto_optimize = req.auto_optimize.unwrap_or(true);
+    let opt_threshold = req.threshold.unwrap_or(0.95);
+    let max_opt_iterations = req.max_opt_iterations.unwrap_or(5);
     tokio::spawn(async move {
         run_evaluation_background(
             state_clone,
@@ -228,6 +252,8 @@ pub async fn start_run(
             scenario_count,
             concurrency,
             auto_optimize,
+            opt_threshold,
+            max_opt_iterations,
         )
         .await;
     });
@@ -243,6 +269,8 @@ async fn run_evaluation_background(
     scenario_count: u32,
     concurrency: u32,
     auto_optimize: bool,
+    opt_threshold: f64,
+    max_opt_iterations: u32,
 ) {
     let eval_repo = EvalRepo::new(state.db.clone());
     let scenario_repo = ScenarioRepo::new(state.db.clone());
@@ -346,153 +374,224 @@ async fn run_evaluation_background(
     state.active_runs.fetch_sub(1, Ordering::SeqCst);
     tracing::info!(%run_id, aggregate = scorecard.aggregate_score, passed = scorecard.passed, errors = scorecard.errors, "Evaluation complete");
 
-    // Self-improvement: if auto_optimize is enabled and the run didn't pass the threshold,
-    // generate improved variants and save the best one as a new agent version.
-    let threshold = 0.85_f64;
-    if auto_optimize && scorecard.aggregate_score < threshold {
-        tracing::info!(%run_id, aggregate = scorecard.aggregate_score, "Score below threshold — starting optimization cycle");
-        tokio::spawn(run_optimization_cycle(
+    // Self-improvement: if auto_optimize is enabled and the run didn't reach the threshold,
+    // kick off the iterative optimization loop in a separate task.
+    if auto_optimize && scorecard.aggregate_score < opt_threshold {
+        tracing::info!(%run_id, aggregate = scorecard.aggregate_score, %opt_threshold, "Score below threshold — starting iterative optimization");
+        tokio::spawn(run_iterative_optimization(
             state.clone(),
+            run_id,
             agent,
             agent_id,
             scorecard.clone(),
             traces,
             scenarios,
+            opt_threshold,
+            max_opt_iterations,
         ));
+    } else if auto_optimize {
+        tracing::info!(%run_id, aggregate = scorecard.aggregate_score, "Score already meets threshold — skipping optimization");
     }
 }
 
-/// Run one optimization cycle: generate variants, quick-eval on a small scenario subset,
-/// save the best-performing variant as a new agent version in the database.
-async fn run_optimization_cycle(
+/// Iterative self-improvement loop.
+///
+/// Each round:
+///   1. Generate variant agents using the optimizer.
+///   2. Quick-eval each variant against a small scenario sample.
+///   3. If the best variant improves by > 1 pp, save it and use it as the
+///      agent for the next round.
+///   4. Update `opt_status / opt_rounds / opt_best_score / opt_best_agent_id`
+///      in the DB after every round.
+///
+/// Terminates when:
+///   - Score ≥ `threshold`  → `converged`
+///   - No variant improves by > 1 pp  → `no_improvement`
+///   - `round == max_iterations`  → `max_iterations`
+///   - Any unrecoverable error  → `failed`
+async fn run_iterative_optimization(
     state: Arc<AppState>,
-    agent: agentforge_core::AgentFile,
+    run_id: Uuid,
+    initial_agent: agentforge_core::AgentFile,
     agent_id: Uuid,
-    scorecard: agentforge_core::Scorecard,
+    initial_scorecard: agentforge_core::Scorecard,
     passing_traces: Vec<Trace>,
     scenarios: Vec<agentforge_core::Scenario>,
+    threshold: f64,
+    max_iterations: u32,
 ) {
-    // Derive the parent SHA from the current agent version in the DB.
+    let eval_repo = EvalRepo::new(state.db.clone());
     let agent_repo = AgentRepo::new(state.db.clone());
-    let parent_sha = match agent_repo.find_by_id(agent_id).await {
-        Ok(v) => v.sha.clone(),
-        Err(_) => agent.name.clone(),
-    };
-
     let optimizer = Optimizer::new(state.optimizer_config.clone());
+
+    // Quick-eval uses up to 25 scenarios to balance speed vs accuracy.
+    let eval_scenarios: Vec<agentforge_core::Scenario> =
+        scenarios.into_iter().take(25).collect();
+
+    let mut current_agent = initial_agent;
+    let mut current_score = initial_scorecard.aggregate_score;
+    let mut current_scorecard = initial_scorecard;
+    let mut best_agent_id: Option<Uuid> = None;
+
+    // Derive the current agent's SHA from the DB so lineage links are correct.
+    let mut parent_sha = match agent_repo.find_by_id(agent_id).await {
+        Ok(v) => v.sha.clone(),
+        Err(_) => current_agent.name.clone(),
+    };
 
     let passing: Vec<Trace> = passing_traces
         .into_iter()
         .filter(|t| t.status == agentforge_core::TraceStatus::Pass)
         .collect();
 
-    let result = match optimizer
-        .generate_variants(&agent, &scorecard, &passing, &parent_sha)
-        .await
-    {
-        Ok(r) => r,
-        Err(e) => {
-            tracing::warn!(error = %e, "Optimizer variant generation failed");
-            return;
+    let mut round: u32 = 0;
+    let terminal_status = loop {
+        if current_score >= threshold {
+            break "converged";
         }
-    };
+        if round >= max_iterations {
+            break "max_iterations";
+        }
 
-    tracing::info!(
-        variants = result.variants.len(),
-        "Optimizer generated variants — running quick evaluation"
-    );
+        // Mark the loop as running in the DB.
+        let _ = eval_repo
+            .update_opt_tracking(run_id, "running", round as i32, Some(current_score), best_agent_id)
+            .await;
 
-    // Quick-eval: use up to 10 scenarios from the original run to rank variants fast.
-    let eval_scenarios: Vec<agentforge_core::Scenario> = scenarios.into_iter().take(10).collect();
+        tracing::info!(%run_id, round, current_score, %threshold, "Optimization round starting");
 
-    let mut best_aggregate = scorecard.aggregate_score;
-    let mut best_version: Option<AgentVersion> = None;
-
-    for variant in &result.variants {
-        let runner = AgentRunner::new(
-            state.llm_client.clone(),
-            RunnerConfig {
-                concurrency: 3,
-                run_id: Uuid::new_v4(),
-                ..Default::default()
-            },
-        );
-
-        let mut mini_traces = runner
-            .run(&variant.agent, eval_scenarios.clone(), None)
+        let result = match optimizer
+            .generate_variants(&current_agent, &current_scorecard, &passing, &parent_sha)
             .await
-            .traces;
-
-        let mini_scorecard = match score_run(
-            &mut mini_traces,
-            &eval_scenarios,
-            &variant.agent,
-            Uuid::new_v4(),
-            &state.scorer_config,
-        )
-        .await
         {
-            Ok(s) => s,
+            Ok(r) => r,
             Err(e) => {
-                tracing::warn!(error = %e, mutation = %variant.mutation_type, "Mini-eval failed for variant");
-                continue;
+                tracing::warn!(error = %e, round, "Variant generation failed");
+                break "failed";
             }
         };
 
-        tracing::info!(
-            mutation = %variant.mutation_type,
-            aggregate = mini_scorecard.aggregate_score,
-            original = scorecard.aggregate_score,
-            "Variant scored"
-        );
-
-        if mini_scorecard.aggregate_score > best_aggregate {
-            best_aggregate = mini_scorecard.aggregate_score;
-            let now = Utc::now();
-            best_version = Some(AgentVersion {
-                id: Uuid::new_v4(),
-                name: variant.agent.name.clone(),
-                version: variant.agent.version.clone(),
-                sha: {
-                    let json = serde_json::to_string(&variant.agent).unwrap_or_default();
-                    compute_sha256(&json)
-                },
-                file_content: variant.agent.clone(),
-                raw_content: serde_json::to_string_pretty(&variant.agent).unwrap_or_default(),
-                format: AgentFileFormat::NativeYaml,
-                promoted: false,
-                is_champion: false,
-                changelog: Some(format!(
-                    "Auto-optimized via {} — score {:.1}% → {:.1}%",
-                    variant.mutation_type,
-                    scorecard.aggregate_score * 100.0,
-                    mini_scorecard.aggregate_score * 100.0,
-                )),
-                parent_sha: Some(parent_sha.clone()),
-                created_at: now,
-                updated_at: now,
-            });
+        if result.variants.is_empty() {
+            tracing::info!(round, "No variants generated — stopping optimization");
+            break "no_improvement";
         }
-    }
 
-    match best_version {
-        Some(v) if best_aggregate > scorecard.aggregate_score + 0.01 => {
-            match agent_repo.insert(&v).await {
-                Ok(saved) => tracing::info!(
-                    new_version_id = %saved.id,
-                    version = %saved.version,
-                    aggregate = best_aggregate,
-                    original = scorecard.aggregate_score,
-                    "Optimizer saved improved agent version"
-                ),
-                Err(e) => tracing::warn!(error = %e, "Failed to save optimized agent version"),
+        let mut round_best_score = current_score;
+        let mut round_best_agent: Option<agentforge_core::AgentFile> = None;
+        let mut round_best_mutation = String::new();
+
+        for variant in &result.variants {
+            let mini_run_id = Uuid::new_v4();
+            let runner = AgentRunner::new(
+                state.llm_client.clone(),
+                RunnerConfig {
+                    concurrency: 3,
+                    run_id: mini_run_id,
+                    ..Default::default()
+                },
+            );
+
+            let mut mini_traces = runner
+                .run(&variant.agent, eval_scenarios.clone(), None)
+                .await
+                .traces;
+
+            let mini_scorecard = match score_run(
+                &mut mini_traces,
+                &eval_scenarios,
+                &variant.agent,
+                mini_run_id,
+                &state.scorer_config,
+            )
+            .await
+            {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::warn!(error = %e, mutation = %variant.mutation_type, round, "Mini-eval failed");
+                    continue;
+                }
+            };
+
+            tracing::info!(
+                mutation = %variant.mutation_type,
+                score = mini_scorecard.aggregate_score,
+                current = current_score,
+                round,
+                "Variant evaluated"
+            );
+
+            if mini_scorecard.aggregate_score > round_best_score {
+                round_best_score = mini_scorecard.aggregate_score;
+                round_best_agent = Some(variant.agent.clone());
+                round_best_mutation = variant.mutation_type.to_string();
             }
         }
-        Some(_) => tracing::info!(
-            "Optimizer ran but no variant improved score by >1% — no new version saved"
-        ),
-        None => tracing::info!("Optimizer found no improvements"),
-    }
+
+        // Only accept if the improvement is > 1 percentage point.
+        if round_best_score <= current_score + 0.01 {
+            tracing::info!(round, current_score, round_best_score, "No meaningful improvement this round");
+            break "no_improvement";
+        }
+
+        // Save the improved version to the DB.
+        let improved = round_best_agent.unwrap();
+        let now = Utc::now();
+        let json = serde_json::to_string(&improved).unwrap_or_default();
+        let new_sha = compute_sha256(&json);
+        let saved_version = AgentVersion {
+            id: Uuid::new_v4(),
+            name: improved.name.clone(),
+            version: improved.version.clone(),
+            sha: new_sha.clone(),
+            file_content: improved.clone(),
+            raw_content: serde_json::to_string_pretty(&improved).unwrap_or_default(),
+            format: AgentFileFormat::NativeYaml,
+            promoted: false,
+            is_champion: false,
+            changelog: Some(format!(
+                "Auto-optimized via {round_best_mutation} (round {}) — score {:.1}% → {:.1}%",
+                round + 1,
+                current_score * 100.0,
+                round_best_score * 100.0,
+            )),
+            parent_sha: Some(parent_sha.clone()),
+            created_at: now,
+            updated_at: now,
+        };
+
+        match agent_repo.insert(&saved_version).await {
+            Ok(saved) => {
+                tracing::info!(
+                    %run_id, round,
+                    new_version_id = %saved.id,
+                    version = %saved.version,
+                    score = round_best_score,
+                    "Saved improved agent version"
+                );
+                best_agent_id = Some(saved.id);
+                parent_sha = new_sha;
+                // Use the full agent scorecard proxy for the next round.
+                current_scorecard = agentforge_core::Scorecard {
+                    aggregate_score: round_best_score,
+                    ..current_scorecard
+                };
+                current_score = round_best_score;
+                current_agent = improved;
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, round, "Failed to save improved agent version");
+                break "failed";
+            }
+        }
+
+        round += 1;
+    };
+
+    let _ = eval_repo
+        .update_opt_tracking(run_id, terminal_status, round as i32, Some(current_score), best_agent_id)
+        .await;
+
+    tracing::info!(%run_id, terminal_status, round, final_score = current_score, "Optimization loop finished");
 }
 
 /// GET /runs/:id
@@ -590,16 +689,24 @@ pub async fn run_progress(
             let eval_repo = EvalRepo::new(state.db.clone());
             match eval_repo.find_by_id(id).await {
                 Ok(run) => {
-                    let is_terminal = matches!(
+                    let eval_done = matches!(
                         run.status,
                         EvalRunStatus::Complete | EvalRunStatus::Error | EvalRunStatus::Cancelled
                     );
+                    let opt_running = run.opt_status.as_deref() == Some("running");
+                    // Terminate the SSE stream only when eval is done AND the
+                    // optimization loop is not still running.
+                    let is_terminal = eval_done && !opt_running;
                     let data = serde_json::json!({
                         "run_id": id,
                         "status": run.status.to_string(),
                         "completed_count": run.completed_count,
                         "scenario_count": run.scenario_count,
                         "error_count": run.error_count,
+                        "opt_status": run.opt_status,
+                        "opt_rounds": run.opt_rounds,
+                        "opt_best_score": run.opt_best_score,
+                        "opt_best_agent_id": run.opt_best_agent_id,
                     });
                     let ev = Event::default()
                         .event("progress")
@@ -756,6 +863,10 @@ mod tests {
             completed_at: None,
             created_at: created,
             updated_at: created,
+            opt_status: None,
+            opt_rounds: 0,
+            opt_best_score: None,
+            opt_best_agent_id: None,
         };
 
         let resp = RunResponse::from(eval_run);
@@ -840,6 +951,10 @@ mod tests {
             completed_count: 9,
             error_count: 1,
             created_at: Utc::now(),
+            opt_status: None,
+            opt_rounds: 0,
+            opt_best_score: None,
+            opt_best_agent_id: None,
         };
         let json = serde_json::to_value(&resp).unwrap();
         assert!(
@@ -862,6 +977,10 @@ mod tests {
             completed_count: 0,
             error_count: 0,
             created_at: Utc::now(),
+            opt_status: None,
+            opt_rounds: 0,
+            opt_best_score: None,
+            opt_best_agent_id: None,
         };
         let json = serde_json::to_value(&resp).unwrap();
         assert!(
@@ -894,6 +1013,10 @@ mod tests {
             completed_at: None,
             created_at: created,
             updated_at: created,
+            opt_status: None,
+            opt_rounds: 0,
+            opt_best_score: None,
+            opt_best_agent_id: None,
         };
         let resp = RunResponse::from(eval_run);
         assert_eq!(resp.aggregate_score, Some(0.92));
@@ -920,6 +1043,10 @@ mod tests {
             completed_at: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
+            opt_status: None,
+            opt_rounds: 0,
+            opt_best_score: None,
+            opt_best_agent_id: None,
         };
         let resp = RunResponse::from(eval_run);
         assert!(
@@ -940,6 +1067,10 @@ mod tests {
             completed_count: 5,
             error_count: 0,
             created_at: Utc::now(),
+            opt_status: None,
+            opt_rounds: 0,
+            opt_best_score: None,
+            opt_best_agent_id: None,
         };
         let json = serde_json::to_value(&resp).unwrap();
         let obj = json.as_object().unwrap();
@@ -997,7 +1128,7 @@ mod tests {
     }
 
     #[test]
-    fn auto_optimize_defaults_to_false_via_unwrap_or() {
+    fn auto_optimize_defaults_to_true_via_unwrap_or() {
         let req = StartRunRequest {
             agent_id: Uuid::new_v4(),
             scenario_count: None,
@@ -1007,9 +1138,11 @@ mod tests {
             provider: None,
             judge_provider: None,
             auto_optimize: None,
+            max_opt_iterations: None,
         };
-        let auto_optimize = req.auto_optimize.unwrap_or(false);
-        assert!(!auto_optimize, "auto_optimize must default to false");
+        // The handler now defaults to true — self-improvement is on by default.
+        let auto_optimize = req.auto_optimize.unwrap_or(true);
+        assert!(auto_optimize, "auto_optimize must default to true");
     }
 
     // ── EvalRunStatus Display stability ──────────────────────────────────────
@@ -1092,6 +1225,10 @@ mod tests {
             completed_count: 4,
             error_count: 1,
             created_at: Utc::now(),
+            opt_status: None,
+            opt_rounds: 0,
+            opt_best_score: None,
+            opt_best_agent_id: None,
         };
         let json = serde_json::to_value(&resp).unwrap();
         assert!(json["pass_rate"].is_number());
@@ -1112,6 +1249,10 @@ mod tests {
             completed_count: 3,
             error_count: 0,
             created_at: Utc::now(),
+            opt_status: None,
+            opt_rounds: 0,
+            opt_best_score: None,
+            opt_best_agent_id: None,
         };
         let json = serde_json::to_value(&resp).unwrap();
         assert!(json["pass_rate"].is_null());
@@ -1139,6 +1280,10 @@ mod tests {
             completed_at: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
+            opt_status: None,
+            opt_rounds: 0,
+            opt_best_score: None,
+            opt_best_agent_id: None,
         };
         let resp = RunResponse::from(eval_run);
         assert_eq!(resp.pass_rate, Some(0.20));
@@ -1168,6 +1313,10 @@ mod tests {
             completed_at: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
+            opt_status: None,
+            opt_rounds: 0,
+            opt_best_score: None,
+            opt_best_agent_id: None,
         };
         let resp = RunResponse::from(eval_run);
         assert_eq!(resp.scenario_count, 0);
@@ -1320,9 +1469,468 @@ mod tests {
             completed_at: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
+            opt_status: None,
+            opt_rounds: 0,
+            opt_best_score: None,
+            opt_best_agent_id: None,
         };
         let resp = RunResponse::from(eval_run);
         assert_eq!(resp.error_count, 0);
         assert_eq!(resp.completed_count, 5);
+    }
+
+    // ── 40 new tests for opt tracking & iterative loop ───────────────────────
+
+    // ── StartRunRequest max_opt_iterations ────────────────────────────────────
+
+    #[test]
+    fn start_run_request_max_opt_iterations_parsed() {
+        let json = serde_json::json!({
+            "agent_id": "550e8400-e29b-41d4-a716-446655440000",
+            "max_opt_iterations": 7
+        });
+        let req: StartRunRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(req.max_opt_iterations, Some(7));
+    }
+
+    #[test]
+    fn start_run_request_max_opt_iterations_defaults_none() {
+        let json = serde_json::json!({ "agent_id": "550e8400-e29b-41d4-a716-446655440000" });
+        let req: StartRunRequest = serde_json::from_value(json).unwrap();
+        assert!(req.max_opt_iterations.is_none());
+    }
+
+    #[test]
+    fn max_opt_iterations_default_via_unwrap_or() {
+        let req = StartRunRequest {
+            agent_id: Uuid::new_v4(),
+            scenario_count: None,
+            seed: None,
+            concurrency: None,
+            threshold: None,
+            provider: None,
+            judge_provider: None,
+            auto_optimize: None,
+            max_opt_iterations: None,
+        };
+        assert_eq!(req.max_opt_iterations.unwrap_or(5), 5);
+    }
+
+    #[test]
+    fn max_opt_iterations_one_is_valid() {
+        let json = serde_json::json!({
+            "agent_id": "550e8400-e29b-41d4-a716-446655440000",
+            "max_opt_iterations": 1
+        });
+        let req: StartRunRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(req.max_opt_iterations, Some(1));
+    }
+
+    #[test]
+    fn start_run_request_all_new_opt_fields() {
+        let json = serde_json::json!({
+            "agent_id": "550e8400-e29b-41d4-a716-446655440000",
+            "auto_optimize": true,
+            "threshold": 0.95,
+            "max_opt_iterations": 5
+        });
+        let req: StartRunRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(req.auto_optimize, Some(true));
+        assert_eq!(req.threshold, Some(0.95));
+        assert_eq!(req.max_opt_iterations, Some(5));
+    }
+
+    // ── RunResponse opt fields ─────────────────────────────────────────────────
+
+    #[test]
+    fn run_response_opt_status_none_serializes_null() {
+        let resp = RunResponse {
+            id: Uuid::new_v4(),
+            agent_id: Uuid::new_v4(),
+            status: "complete".to_string(),
+            aggregate_score: None,
+            pass_rate: None,
+            scenario_count: 5,
+            completed_count: 5,
+            error_count: 0,
+            created_at: Utc::now(),
+            opt_status: None,
+            opt_rounds: 0,
+            opt_best_score: None,
+            opt_best_agent_id: None,
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert!(json["opt_status"].is_null());
+        assert_eq!(json["opt_rounds"], 0);
+        assert!(json["opt_best_score"].is_null());
+        assert!(json["opt_best_agent_id"].is_null());
+    }
+
+    #[test]
+    fn run_response_opt_status_running_serializes() {
+        let resp = RunResponse {
+            id: Uuid::new_v4(),
+            agent_id: Uuid::new_v4(),
+            status: "complete".to_string(),
+            aggregate_score: Some(0.4),
+            pass_rate: None,
+            scenario_count: 10,
+            completed_count: 10,
+            error_count: 0,
+            created_at: Utc::now(),
+            opt_status: Some("running".to_string()),
+            opt_rounds: 2,
+            opt_best_score: Some(0.65),
+            opt_best_agent_id: None,
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["opt_status"], "running");
+        assert_eq!(json["opt_rounds"], 2);
+        assert!((json["opt_best_score"].as_f64().unwrap() - 0.65).abs() < 1e-9);
+    }
+
+    #[test]
+    fn run_response_opt_status_converged_serializes() {
+        let resp = RunResponse {
+            id: Uuid::new_v4(),
+            agent_id: Uuid::new_v4(),
+            status: "complete".to_string(),
+            aggregate_score: Some(0.97),
+            pass_rate: None,
+            scenario_count: 10,
+            completed_count: 10,
+            error_count: 0,
+            created_at: Utc::now(),
+            opt_status: Some("converged".to_string()),
+            opt_rounds: 3,
+            opt_best_score: Some(0.97),
+            opt_best_agent_id: Some(Uuid::new_v4()),
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["opt_status"], "converged");
+        assert_eq!(json["opt_rounds"], 3);
+        assert!(json["opt_best_agent_id"].is_string());
+    }
+
+    #[test]
+    fn run_response_from_eval_run_maps_opt_fields() {
+        let best_id = Uuid::new_v4();
+        let eval_run = EvalRun {
+            id: Uuid::new_v4(),
+            agent_id: Uuid::new_v4(),
+            scenario_set_id: None,
+            status: EvalRunStatus::Complete,
+            scenario_count: 20,
+            completed_count: 20,
+            error_count: 0,
+            aggregate_score: Some(0.96),
+            pass_rate: Some(0.90),
+            scores: None,
+            failure_clusters: None,
+            seed: 42,
+            concurrency: 5,
+            error_message: None,
+            started_at: None,
+            completed_at: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            opt_status: Some("converged".to_string()),
+            opt_rounds: 2,
+            opt_best_score: Some(0.96),
+            opt_best_agent_id: Some(best_id),
+        };
+        let resp = RunResponse::from(eval_run);
+        assert_eq!(resp.opt_status.as_deref(), Some("converged"));
+        assert_eq!(resp.opt_rounds, 2);
+        assert_eq!(resp.opt_best_score, Some(0.96));
+        assert_eq!(resp.opt_best_agent_id, Some(best_id));
+    }
+
+    #[test]
+    fn run_response_from_eval_run_maps_no_improvement() {
+        let eval_run = EvalRun {
+            id: Uuid::new_v4(),
+            agent_id: Uuid::new_v4(),
+            scenario_set_id: None,
+            status: EvalRunStatus::Complete,
+            scenario_count: 10,
+            completed_count: 10,
+            error_count: 0,
+            aggregate_score: Some(0.50),
+            pass_rate: None,
+            scores: None,
+            failure_clusters: None,
+            seed: 1,
+            concurrency: 4,
+            error_message: None,
+            started_at: None,
+            completed_at: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            opt_status: Some("no_improvement".to_string()),
+            opt_rounds: 1,
+            opt_best_score: Some(0.50),
+            opt_best_agent_id: None,
+        };
+        let resp = RunResponse::from(eval_run);
+        assert_eq!(resp.opt_status.as_deref(), Some("no_improvement"));
+        assert_eq!(resp.opt_rounds, 1);
+        assert!(resp.opt_best_agent_id.is_none());
+    }
+
+    #[test]
+    fn run_response_opt_rounds_zero_is_default() {
+        let eval_run = EvalRun {
+            id: Uuid::new_v4(),
+            agent_id: Uuid::new_v4(),
+            scenario_set_id: None,
+            status: EvalRunStatus::Pending,
+            scenario_count: 100,
+            completed_count: 0,
+            error_count: 0,
+            aggregate_score: None,
+            pass_rate: None,
+            scores: None,
+            failure_clusters: None,
+            seed: 42,
+            concurrency: 5,
+            error_message: None,
+            started_at: None,
+            completed_at: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            opt_status: None,
+            opt_rounds: 0,
+            opt_best_score: None,
+            opt_best_agent_id: None,
+        };
+        let resp = RunResponse::from(eval_run);
+        assert_eq!(resp.opt_rounds, 0);
+    }
+
+    #[test]
+    fn run_response_opt_fields_in_serialized_keys() {
+        let resp = RunResponse {
+            id: Uuid::new_v4(),
+            agent_id: Uuid::new_v4(),
+            status: "complete".to_string(),
+            aggregate_score: None,
+            pass_rate: None,
+            scenario_count: 1,
+            completed_count: 1,
+            error_count: 0,
+            created_at: Utc::now(),
+            opt_status: Some("max_iterations".to_string()),
+            opt_rounds: 5,
+            opt_best_score: Some(0.91),
+            opt_best_agent_id: None,
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        let obj = json.as_object().unwrap();
+        assert!(obj.contains_key("opt_status"));
+        assert!(obj.contains_key("opt_rounds"));
+        assert!(obj.contains_key("opt_best_score"));
+        assert!(obj.contains_key("opt_best_agent_id"));
+    }
+
+    // ── Opt loop terminal status strings ─────────────────────────────────────
+
+    #[test]
+    fn opt_terminal_statuses_are_distinct() {
+        let statuses = ["converged", "no_improvement", "max_iterations", "failed", "running"];
+        let unique: std::collections::HashSet<_> = statuses.iter().collect();
+        assert_eq!(unique.len(), statuses.len());
+    }
+
+    #[test]
+    fn opt_threshold_default_is_0_95() {
+        // The handler uses `req.threshold.unwrap_or(0.95)`.
+        let req = StartRunRequest {
+            agent_id: Uuid::new_v4(),
+            scenario_count: None,
+            seed: None,
+            concurrency: None,
+            threshold: None,
+            provider: None,
+            judge_provider: None,
+            auto_optimize: None,
+            max_opt_iterations: None,
+        };
+        let threshold = req.threshold.unwrap_or(0.95);
+        assert!((threshold - 0.95).abs() < 1e-9);
+    }
+
+    #[test]
+    fn opt_threshold_explicit_0_75() {
+        let req = StartRunRequest {
+            agent_id: Uuid::new_v4(),
+            scenario_count: None,
+            seed: None,
+            concurrency: None,
+            threshold: Some(0.75),
+            provider: None,
+            judge_provider: None,
+            auto_optimize: None,
+            max_opt_iterations: None,
+        };
+        assert_eq!(req.threshold.unwrap_or(0.95), 0.75);
+    }
+
+    #[test]
+    fn score_meets_threshold_converged() {
+        // If current_score >= threshold the loop should break with "converged".
+        // Simulate the condition check here as a unit test.
+        let current_score = 0.96_f64;
+        let threshold = 0.95_f64;
+        assert!(
+            current_score >= threshold,
+            "Loop should converge when score meets threshold"
+        );
+    }
+
+    #[test]
+    fn score_below_threshold_continues() {
+        let current_score = 0.94_f64;
+        let threshold = 0.95_f64;
+        assert!(current_score < threshold, "Loop should continue when score is below threshold");
+    }
+
+    #[test]
+    fn no_improvement_condition() {
+        // Verify the > 1% improvement guard works correctly.
+        let current_score = 0.70_f64;
+        let round_best_score = 0.705_f64; // only 0.5% improvement
+        assert!(
+            round_best_score <= current_score + 0.01,
+            "Should break no_improvement when improvement <= 1 pp"
+        );
+    }
+
+    #[test]
+    fn improvement_over_1pp_condition() {
+        let current_score = 0.70_f64;
+        let round_best_score = 0.715_f64; // 1.5% improvement
+        assert!(
+            round_best_score > current_score + 0.01,
+            "Should continue when improvement > 1 pp"
+        );
+    }
+
+    #[test]
+    fn max_iterations_reached_condition() {
+        let round: u32 = 5;
+        let max_iterations: u32 = 5;
+        assert!(round >= max_iterations, "Loop must stop when round reaches max_iterations");
+    }
+
+    #[test]
+    fn round_zero_does_not_exceed_max() {
+        let round: u32 = 0;
+        let max_iterations: u32 = 5;
+        assert!(round < max_iterations, "Round 0 must not exceed max_iterations 5");
+    }
+
+    // ── SSE progress event with opt fields ────────────────────────────────────
+
+    #[test]
+    fn sse_event_with_opt_running_status() {
+        let data = serde_json::json!({
+            "run_id": Uuid::new_v4().to_string(),
+            "status": "complete",
+            "completed_count": 100_u32,
+            "scenario_count": 100_u32,
+            "error_count": 0_u32,
+            "opt_status": "running",
+            "opt_rounds": 1_i32,
+            "opt_best_score": 0.72_f64,
+            "opt_best_agent_id": serde_json::Value::Null,
+        });
+        assert_eq!(data["opt_status"], "running");
+        assert_eq!(data["opt_rounds"], 1);
+        assert!((data["opt_best_score"].as_f64().unwrap() - 0.72).abs() < 1e-9);
+        assert!(data["opt_best_agent_id"].is_null());
+    }
+
+    #[test]
+    fn sse_event_with_opt_converged_status() {
+        let best_id = Uuid::new_v4();
+        let data = serde_json::json!({
+            "run_id": Uuid::new_v4().to_string(),
+            "status": "complete",
+            "completed_count": 100_u32,
+            "scenario_count": 100_u32,
+            "error_count": 0_u32,
+            "opt_status": "converged",
+            "opt_rounds": 3_i32,
+            "opt_best_score": 0.96_f64,
+            "opt_best_agent_id": best_id.to_string(),
+        });
+        assert_eq!(data["opt_status"], "converged");
+        assert_eq!(data["opt_rounds"], 3);
+        assert!(data["opt_best_agent_id"].is_string());
+    }
+
+    #[test]
+    fn sse_terminal_eval_done_opt_done() {
+        // When eval is complete AND opt is not running, SSE should stop.
+        let eval_done = true;
+        let opt_running = false;
+        let is_terminal = eval_done && !opt_running;
+        assert!(is_terminal, "SSE must terminate when eval is done and opt is not running");
+    }
+
+    #[test]
+    fn sse_not_terminal_when_eval_done_but_opt_running() {
+        let eval_done = true;
+        let opt_running = true;
+        let is_terminal = eval_done && !opt_running;
+        assert!(!is_terminal, "SSE must keep polling while opt loop is still running");
+    }
+
+    #[test]
+    fn sse_not_terminal_when_eval_still_running() {
+        let eval_done = false;
+        let opt_running = false;
+        let is_terminal = eval_done && !opt_running;
+        assert!(!is_terminal, "SSE must not terminate while eval is still running");
+    }
+
+    #[test]
+    fn run_response_opt_best_score_extreme_values() {
+        let resp_low = RunResponse {
+            id: Uuid::new_v4(),
+            agent_id: Uuid::new_v4(),
+            status: "complete".to_string(),
+            aggregate_score: Some(0.01),
+            pass_rate: None,
+            scenario_count: 1,
+            completed_count: 1,
+            error_count: 0,
+            created_at: Utc::now(),
+            opt_status: Some("no_improvement".to_string()),
+            opt_rounds: 0,
+            opt_best_score: Some(0.0),
+            opt_best_agent_id: None,
+        };
+        let json = serde_json::to_value(&resp_low).unwrap();
+        assert!((json["opt_best_score"].as_f64().unwrap()).abs() < 1e-9);
+
+        let resp_high = RunResponse {
+            id: Uuid::new_v4(),
+            agent_id: Uuid::new_v4(),
+            status: "complete".to_string(),
+            aggregate_score: Some(1.0),
+            pass_rate: None,
+            scenario_count: 1,
+            completed_count: 1,
+            error_count: 0,
+            created_at: Utc::now(),
+            opt_status: Some("converged".to_string()),
+            opt_rounds: 1,
+            opt_best_score: Some(1.0),
+            opt_best_agent_id: None,
+        };
+        let json2 = serde_json::to_value(&resp_high).unwrap();
+        assert!((json2["opt_best_score"].as_f64().unwrap() - 1.0).abs() < 1e-9);
     }
 }

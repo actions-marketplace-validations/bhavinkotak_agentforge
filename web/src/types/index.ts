@@ -25,6 +25,12 @@ export interface RunResponse {
   completed_count: number
   error_count: number
   created_at: string
+  // Self-improvement loop tracking
+  /** `running` | `converged` | `no_improvement` | `max_iterations` | `failed` */
+  opt_status?: string | null
+  opt_rounds: number
+  opt_best_score?: number | null
+  opt_best_agent_id?: string | null
 }
 
 export interface DimensionScores {
@@ -61,6 +67,11 @@ export interface EvalRunDetail {
   completed_at?: string
   created_at: string
   updated_at: string
+  // Self-improvement loop tracking
+  opt_status?: string | null
+  opt_rounds: number
+  opt_best_score?: number | null
+  opt_best_agent_id?: string | null
 }
 
 // ── Promote ─────────────────────────────────────────────────────────────────

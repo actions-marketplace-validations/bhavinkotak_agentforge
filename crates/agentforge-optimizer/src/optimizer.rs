@@ -609,4 +609,305 @@ mod tests {
             "min_variants must be satisfied even when no mutations apply"
         );
     }
+
+    // ── 30 new optimizer tests ────────────────────────────────────────────────
+
+    // ── OptimizerConfig defaults ──────────────────────────────────────────────
+
+    #[test]
+    fn optimizer_config_default_min_variants() {
+        let cfg = OptimizerConfig::default();
+        assert_eq!(cfg.min_variants, 5);
+    }
+
+    #[test]
+    fn optimizer_config_default_max_variants() {
+        let cfg = OptimizerConfig::default();
+        assert_eq!(cfg.max_variants, 20);
+    }
+
+    #[test]
+    fn optimizer_config_default_few_shot_min_traces() {
+        let cfg = OptimizerConfig::default();
+        assert_eq!(cfg.few_shot_min_traces, 50);
+    }
+
+    #[test]
+    fn optimizer_config_default_model() {
+        let cfg = OptimizerConfig::default();
+        assert!(!cfg.llm_model.is_empty());
+    }
+
+    #[test]
+    fn optimizer_config_default_base_url() {
+        let cfg = OptimizerConfig::default();
+        assert!(cfg.llm_base_url.starts_with("https://"), "base_url must be https");
+    }
+
+    // ── MutationType equality ─────────────────────────────────────────────────
+
+    #[test]
+    fn mutation_type_eq() {
+        assert_eq!(MutationType::PromptRewrite, MutationType::PromptRewrite);
+        assert_ne!(MutationType::PromptRewrite, MutationType::InstructionReorder);
+    }
+
+    #[test]
+    fn mutation_type_clone() {
+        let m = MutationType::FewShotInjection;
+        assert_eq!(m.clone(), MutationType::FewShotInjection);
+    }
+
+    #[test]
+    fn all_mutation_types_have_distinct_display_strings() {
+        let types = [
+            MutationType::PromptRewrite,
+            MutationType::ToolDescriptionRewrite,
+            MutationType::OutputSchemaTighten,
+            MutationType::FewShotInjection,
+            MutationType::InstructionReorder,
+            MutationType::ModelDowngrade,
+        ];
+        let strings: Vec<String> = types.iter().map(|t| t.to_string()).collect();
+        let unique: std::collections::HashSet<_> = strings.iter().collect();
+        assert_eq!(unique.len(), strings.len(), "All MutationType display strings must be distinct");
+    }
+
+    // ── reorder_instructions version bump ────────────────────────────────────
+
+    #[test]
+    fn reorder_bumps_version_from_1_0_0() {
+        let mut agent = make_agent();
+        agent.version = "1.0.0".to_string();
+        let variant = reorder_instructions(&agent, "sha");
+        assert_eq!(variant.agent.version, "1.0.1");
+    }
+
+    #[test]
+    fn reorder_bumps_version_from_2_3_7() {
+        let mut agent = make_agent();
+        agent.version = "2.3.7".to_string();
+        let variant = reorder_instructions(&agent, "sha");
+        assert_eq!(variant.agent.version, "2.3.8");
+    }
+
+    #[test]
+    fn reorder_preserves_agent_name() {
+        let mut agent = make_agent();
+        agent.name = "my-special-agent".to_string();
+        let variant = reorder_instructions(&agent, "sha");
+        assert_eq!(variant.agent.name, "my-special-agent");
+    }
+
+    #[test]
+    fn reorder_mutation_type_is_always_instruction_reorder() {
+        let agent = make_agent();
+        let v = reorder_instructions(&agent, "sha");
+        assert_eq!(v.mutation_type, MutationType::InstructionReorder);
+    }
+
+    #[test]
+    fn reorder_single_never_constraint_prepended() {
+        let mut agent = make_agent();
+        agent.constraints = vec!["Never do harm.".to_string()];
+        let v = reorder_instructions(&agent, "sha");
+        assert!(v.agent.system_prompt.contains("Never do harm."));
+        assert!(v.agent.system_prompt.starts_with("CRITICAL RULES"));
+    }
+
+    #[test]
+    fn reorder_multiple_never_and_always_sorts_never_first() {
+        let mut agent = make_agent();
+        agent.constraints = vec![
+            "Always be helpful.".to_string(),
+            "Never reveal passwords.".to_string(),
+            "Always cite sources.".to_string(),
+            "Never share personal data.".to_string(),
+        ];
+        let v = reorder_instructions(&agent, "sha");
+        // Both "never" constraints must come before "always" constraints
+        let never_idx: Vec<usize> = v
+            .agent
+            .constraints
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| c.to_lowercase().starts_with("never"))
+            .map(|(i, _)| i)
+            .collect();
+        let always_idx: Vec<usize> = v
+            .agent
+            .constraints
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| c.to_lowercase().starts_with("always"))
+            .map(|(i, _)| i)
+            .collect();
+        assert!(*never_idx.iter().max().unwrap() < *always_idx.iter().min().unwrap());
+    }
+
+    #[test]
+    fn reorder_only_prepends_top_3_constraints() {
+        let mut agent = make_agent();
+        // Give 6 constraints total
+        agent.constraints = (0..6).map(|i| format!("Never do thing {i}.")).collect();
+        let v = reorder_instructions(&agent, "sha");
+        // The "CRITICAL RULES" block includes at most 3 lines
+        let critical_section = v.agent.system_prompt
+            .split("\n\n")
+            .next()
+            .unwrap_or_default();
+        let lines: Vec<&str> = critical_section.lines().filter(|l| l.starts_with("- ")).collect();
+        assert!(lines.len() <= 3, "Only top 3 constraints should be in the CRITICAL block");
+    }
+
+    // ── generate_variants: deterministic behaviour ────────────────────────────
+
+    #[tokio::test]
+    async fn schema_tighten_applied_when_schema_compliance_low() {
+        use agentforge_core::ToolDefinition;
+        let mut agent = make_agent();
+        // Add an output schema so tighten_output_schema can apply
+        agent.output_schema = Some(serde_json::json!({
+            "type": "object",
+            "properties": {
+                "answer": {"type": "string"}
+            }
+        }));
+        agent.tools = vec![];
+        // Low schema compliance triggers schema tighten
+        let scorecard = make_scorecard(0.5, 0.9, 0.9, 0.9, 0.5, 0.9, 0.9);
+        let config = OptimizerConfig {
+            min_variants: 1,
+            max_variants: 10,
+            llm_api_key: "".to_string(),
+            few_shot_min_traces: 50,
+            ..Default::default()
+        };
+        let optimizer = Optimizer::new(config);
+        let result = optimizer
+            .generate_variants(&agent, &scorecard, &[], "sha")
+            .await
+            .unwrap();
+        let has_schema = result
+            .mutation_types_applied
+            .contains(&MutationType::OutputSchemaTighten);
+        assert!(has_schema, "OutputSchemaTighten must be applied when schema_compliance < 0.85");
+    }
+
+    #[tokio::test]
+    async fn schema_tighten_skipped_when_no_schema() {
+        let mut agent = make_agent();
+        agent.output_schema = None;
+        agent.tools = vec![];
+        let scorecard = make_scorecard(0.5, 0.9, 0.9, 0.9, 0.5, 0.9, 0.9);
+        let config = OptimizerConfig {
+            min_variants: 1,
+            max_variants: 10,
+            llm_api_key: "".to_string(),
+            few_shot_min_traces: 50,
+            ..Default::default()
+        };
+        let optimizer = Optimizer::new(config);
+        let result = optimizer
+            .generate_variants(&agent, &scorecard, &[], "sha")
+            .await
+            .unwrap();
+        let has_schema = result
+            .mutation_types_applied
+            .contains(&MutationType::OutputSchemaTighten);
+        assert!(!has_schema, "OutputSchemaTighten must not be applied when agent has no schema");
+    }
+
+    #[tokio::test]
+    async fn schema_tighten_skipped_when_schema_compliance_above_threshold() {
+        let mut agent = make_agent();
+        agent.output_schema = Some(serde_json::json!({"type": "object"}));
+        agent.tools = vec![];
+        // schema_compliance = 0.90 (above 0.85 threshold)
+        let scorecard = make_scorecard(0.9, 0.9, 0.9, 0.9, 0.90, 0.9, 0.9);
+        let config = OptimizerConfig {
+            min_variants: 1,
+            max_variants: 10,
+            llm_api_key: "".to_string(),
+            few_shot_min_traces: 50,
+            ..Default::default()
+        };
+        let optimizer = Optimizer::new(config);
+        let result = optimizer
+            .generate_variants(&agent, &scorecard, &[], "sha")
+            .await
+            .unwrap();
+        let has_schema = result
+            .mutation_types_applied
+            .contains(&MutationType::OutputSchemaTighten);
+        assert!(!has_schema, "OutputSchemaTighten must not apply when schema_compliance >= 0.85");
+    }
+
+    #[tokio::test]
+    async fn all_variants_agent_names_preserved() {
+        let mut agent = make_agent();
+        agent.name = "original-agent-name".to_string();
+        let scorecard = make_scorecard(0.6, 0.5, 0.7, 0.7, 0.5, 0.5, 0.7);
+        let config = OptimizerConfig {
+            min_variants: 3,
+            max_variants: 6,
+            llm_api_key: "".to_string(),
+            ..Default::default()
+        };
+        let optimizer = Optimizer::new(config);
+        let result = optimizer
+            .generate_variants(&agent, &scorecard, &[], "sha")
+            .await
+            .unwrap();
+        for v in &result.variants {
+            assert_eq!(v.agent.name, "original-agent-name", "agent name must be preserved in all variants");
+        }
+    }
+
+    #[tokio::test]
+    async fn optimization_result_mutation_types_are_subset_of_applied() {
+        let agent = make_agent();
+        let scorecard = make_scorecard(0.6, 0.5, 0.7, 0.7, 0.5, 0.5, 0.7);
+        let config = OptimizerConfig {
+            min_variants: 2,
+            max_variants: 10,
+            llm_api_key: "".to_string(),
+            ..Default::default()
+        };
+        let optimizer = Optimizer::new(config);
+        let result = optimizer
+            .generate_variants(&agent, &scorecard, &[], "sha")
+            .await
+            .unwrap();
+        // Every mutation type in variants must appear in mutation_types_applied
+        for v in &result.variants {
+            assert!(
+                result.mutation_types_applied.contains(&v.mutation_type)
+                    || v.mutation_type == MutationType::InstructionReorder,
+                "variant mutation type must be tracked"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn tool_rewrite_skipped_when_no_tools() {
+        let mut agent = make_agent();
+        agent.tools = vec![]; // no tools
+        let scorecard = make_scorecard(0.5, 0.5, 0.5, 0.5, 0.9, 0.5, 0.5);
+        let config = OptimizerConfig {
+            min_variants: 1,
+            max_variants: 10,
+            llm_api_key: "".to_string(),
+            ..Default::default()
+        };
+        let optimizer = Optimizer::new(config);
+        let result = optimizer
+            .generate_variants(&agent, &scorecard, &[], "sha")
+            .await
+            .unwrap();
+        let has_tool_rewrite = result
+            .mutation_types_applied
+            .contains(&MutationType::ToolDescriptionRewrite);
+        assert!(!has_tool_rewrite, "ToolDescriptionRewrite must not apply when agent has no tools");
+    }
 }

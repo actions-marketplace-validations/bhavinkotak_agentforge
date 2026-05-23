@@ -455,4 +455,223 @@ mod tests {
         let agent = make_agent_with_schema();
         assert!(inject_few_shot_examples(&agent, &[]).is_err());
     }
+
+    // ── bump_patch_version_pub ────────────────────────────────────────────────
+
+    #[test]
+    fn bump_patch_version_pub_matches_private() {
+        // The pub wrapper must return identical results to the private function.
+        assert_eq!(bump_patch_version_pub("1.0.0"), "1.0.1");
+        assert_eq!(bump_patch_version_pub("3.2.9"), "3.2.10");
+        assert_eq!(bump_patch_version_pub("invalid"), "invalid-opt");
+    }
+
+    #[test]
+    fn bump_patch_version_large_patch_number() {
+        assert_eq!(bump_patch_version("1.0.99"), "1.0.100");
+        assert_eq!(bump_patch_version("1.0.999"), "1.0.1000");
+    }
+
+    #[test]
+    fn bump_patch_version_zero_patch() {
+        assert_eq!(bump_patch_version("0.0.0"), "0.0.1");
+    }
+
+    #[test]
+    fn bump_patch_version_does_not_touch_major_minor() {
+        let result = bump_patch_version("5.12.3");
+        assert!(result.starts_with("5.12."), "major.minor must be preserved");
+        assert_eq!(result, "5.12.4");
+    }
+
+    #[test]
+    fn bump_patch_version_empty_string_returns_fallback() {
+        let result = bump_patch_version("");
+        assert!(!result.is_empty(), "result must not be empty string");
+    }
+
+    #[test]
+    fn bump_patch_version_only_two_parts_returns_fallback() {
+        // "1.0" has no patch component — should return fallback
+        let result = bump_patch_version("1.0");
+        assert!(result.ends_with("-opt"), "must use -opt fallback: {result}");
+    }
+
+    #[test]
+    fn bump_patch_version_pub_zero_to_one() {
+        assert_eq!(bump_patch_version_pub("2.5.0"), "2.5.1");
+    }
+
+    // ── parse_prompt_variants ─────────────────────────────────────────────────
+
+    #[test]
+    fn parse_prompt_variants_from_top_level_array() {
+        let agent = make_agent_with_schema();
+        let response = serde_json::json!(["prompt A", "prompt B", "prompt C"]);
+        let variants = parse_prompt_variants(&response, &agent, 3).unwrap();
+        assert_eq!(variants.len(), 3);
+        assert_eq!(variants[0].system_prompt, "prompt A");
+        assert_eq!(variants[1].system_prompt, "prompt B");
+    }
+
+    #[test]
+    fn parse_prompt_variants_from_object_key() {
+        let agent = make_agent_with_schema();
+        let response = serde_json::json!({
+            "improved_prompts": ["new prompt 1", "new prompt 2"]
+        });
+        let variants = parse_prompt_variants(&response, &agent, 2).unwrap();
+        assert_eq!(variants.len(), 2);
+        assert_eq!(variants[0].system_prompt, "new prompt 1");
+    }
+
+    #[test]
+    fn parse_prompt_variants_caps_at_n() {
+        let agent = make_agent_with_schema();
+        let response = serde_json::json!(["a", "b", "c", "d", "e"]);
+        let variants = parse_prompt_variants(&response, &agent, 2).unwrap();
+        assert_eq!(variants.len(), 2);
+    }
+
+    #[test]
+    fn parse_prompt_variants_bumps_version() {
+        let mut agent = make_agent_with_schema();
+        agent.version = "1.2.3".to_string();
+        let response = serde_json::json!(["new prompt"]);
+        let variants = parse_prompt_variants(&response, &agent, 1).unwrap();
+        assert_eq!(variants[0].version, "1.2.4");
+    }
+
+    #[test]
+    fn parse_prompt_variants_error_on_empty_object() {
+        let agent = make_agent_with_schema();
+        let response = serde_json::json!({});
+        assert!(parse_prompt_variants(&response, &agent, 1).is_err());
+    }
+
+    #[test]
+    fn parse_prompt_variants_error_on_non_array_non_object() {
+        let agent = make_agent_with_schema();
+        let response = serde_json::json!("just a string");
+        assert!(parse_prompt_variants(&response, &agent, 1).is_err());
+    }
+
+    #[test]
+    fn parse_prompt_variants_filters_non_string_array_items() {
+        let agent = make_agent_with_schema();
+        let response = serde_json::json!([42, "valid prompt", null]);
+        let variants = parse_prompt_variants(&response, &agent, 3).unwrap();
+        // Only 1 valid string out of 3
+        assert_eq!(variants.len(), 1);
+    }
+
+    // ── tighten_output_schema ─────────────────────────────────────────────────
+
+    #[test]
+    fn tighten_schema_adds_additional_properties_false() {
+        let agent = make_agent_with_schema();
+        let variant = tighten_output_schema(&agent).unwrap();
+        assert_eq!(
+            variant.output_schema.as_ref().unwrap()["additionalProperties"],
+            serde_json::json!(false)
+        );
+    }
+
+    #[test]
+    fn tighten_schema_version_bumped() {
+        let mut agent = make_agent_with_schema();
+        agent.version = "3.0.5".to_string();
+        let variant = tighten_output_schema(&agent).unwrap();
+        assert_eq!(variant.version, "3.0.6");
+    }
+
+    #[test]
+    fn tighten_schema_preserves_properties() {
+        let agent = make_agent_with_schema();
+        let variant = tighten_output_schema(&agent).unwrap();
+        let schema = variant.output_schema.as_ref().unwrap();
+        // Properties from the original schema must still be present
+        assert!(schema["properties"].is_object());
+    }
+
+    #[test]
+    fn tighten_schema_returns_none_no_schema() {
+        let agent = make_agent_with_schema();
+        let mut no_schema = agent.clone();
+        no_schema.output_schema = None;
+        assert!(tighten_output_schema(&no_schema).is_none());
+    }
+
+    #[test]
+    fn tighten_schema_preserves_agent_name() {
+        let agent = make_agent_with_schema();
+        let variant = tighten_output_schema(&agent).unwrap();
+        assert_eq!(variant.name, agent.name);
+    }
+
+    // ── inject_few_shot_examples ──────────────────────────────────────────────
+
+    #[test]
+    fn inject_few_shot_ok_with_traces() {
+        use agentforge_core::{FailureCluster, Trace, TraceStatus};
+        use uuid::Uuid;
+        let agent = make_agent_with_schema();
+        let traces: Vec<Trace> = (0..3)
+            .map(|i| Trace {
+                id: Uuid::new_v4(),
+                run_id: Uuid::new_v4(),
+                scenario_id: Uuid::new_v4(),
+                status: TraceStatus::Pass,
+                steps: vec![],
+                final_output: Some(serde_json::json!({"response": format!("agent answer {i}")})),
+                scores: None,
+                aggregate_score: Some(0.9),
+                failure_cluster: FailureCluster::NoFailure,
+                failure_reason: None,
+                review_needed: false,
+                llm_calls: 1,
+                tool_invocations: 0,
+                input_tokens: 10,
+                output_tokens: 20,
+                latency_ms: 100,
+                retry_count: 0,
+                seed: 0,
+                created_at: chrono::Utc::now(),
+            })
+            .collect();
+        let result = inject_few_shot_examples(&agent, &traces);
+        assert!(result.is_ok(), "inject_few_shot_examples failed: {:?}", result.err());
+        let variant = result.unwrap();
+        // System prompt must contain the original content and the examples section
+        assert!(
+            variant.system_prompt.contains("Examples of Excellent Responses"),
+            "Injected prompt must contain the examples section"
+        );
+    }
+
+    // ── parse_tool_variants ───────────────────────────────────────────────────
+
+    #[test]
+    fn parse_tool_variants_from_improved_variants_key() {
+        use agentforge_core::ToolDefinition;
+        let mut agent = make_agent_with_schema();
+        agent.tools = vec![ToolDefinition {
+            name: "search".to_string(),
+            description: "Search for things".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {},
+                "required": []
+            }),
+        }];
+        // Each element of the outer array is a *complete array of tools* for one variant.
+        let response = serde_json::json!({
+            "improved_variants": [
+                [{"name": "search", "description": "Search the web for information", "parameters": {"type": "object", "properties": {}, "required": []}}]
+            ]
+        });
+        let variants = parse_tool_variants(&response, &agent, 1).unwrap();
+        assert_eq!(variants.len(), 1);
+        assert_eq!(variants[0].tools[0].description, "Search the web for information");
+    }
 }
