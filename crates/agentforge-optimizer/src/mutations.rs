@@ -60,13 +60,25 @@ fn parse_prompt_variants(
     base_agent: &AgentFile,
     n: usize,
 ) -> Result<Vec<AgentFile>> {
-    // Try to find an array of strings in the response
+    // Try to find an array of strings in the response — the LLM may use any key name
     let arr = if let Some(arr) = response.as_array() {
         arr.to_vec()
-    } else if let Some(arr) = response.get("prompts").and_then(|p| p.as_array()) {
-        arr.to_vec()
-    } else if let Some(arr) = response.get("variants").and_then(|p| p.as_array()) {
-        arr.to_vec()
+    } else if let Some(obj) = response.as_object() {
+        // Scan all keys and pick the first that holds a non-empty array
+        obj.values()
+            .find_map(|v| {
+                let a = v.as_array()?;
+                if a.is_empty() {
+                    None
+                } else {
+                    Some(a.to_vec())
+                }
+            })
+            .ok_or_else(|| {
+                AgentForgeError::ParseError(
+                    "LLM did not return a valid array of prompts".to_string(),
+                )
+            })?
     } else {
         return Err(AgentForgeError::ParseError(
             "LLM did not return a valid array of prompts".to_string(),
@@ -144,10 +156,24 @@ fn parse_tool_variants(
     base_agent: &AgentFile,
     n: usize,
 ) -> Result<Vec<AgentFile>> {
+    // Scan any array field — the LLM may use any key name (e.g. "tools", "variants", "improved_tools")
     let arr = if let Some(arr) = response.as_array() {
         arr.to_vec()
-    } else if let Some(arr) = response.get("variants").and_then(|p| p.as_array()) {
-        arr.to_vec()
+    } else if let Some(obj) = response.as_object() {
+        obj.values()
+            .find_map(|v| {
+                let a = v.as_array()?;
+                if a.is_empty() {
+                    None
+                } else {
+                    Some(a.to_vec())
+                }
+            })
+            .ok_or_else(|| {
+                AgentForgeError::ParseError(
+                    "LLM did not return a valid array of tool variants".to_string(),
+                )
+            })?
     } else {
         return Err(AgentForgeError::ParseError(
             "LLM did not return a valid array of tool variants".to_string(),
@@ -255,7 +281,7 @@ async fn call_llm_api(
     _n: usize,
 ) -> Result<serde_json::Value> {
     let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(90))
+        .timeout(std::time::Duration::from_secs(120))
         .build()
         .map_err(|e| AgentForgeError::HttpError(e.to_string()))?;
 
@@ -276,35 +302,74 @@ async fn call_llm_api(
         "n": 1
     });
 
-    let resp = client
-        .post(format!("{}/chat/completions", config.llm_base_url))
-        .header("Authorization", format!("Bearer {}", config.llm_api_key))
-        .header("Content-Type", "application/json")
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| AgentForgeError::HttpError(e.to_string()))?;
+    // Retry up to 3 times with exponential backoff (handles post-eval rate-limit recovery)
+    let mut last_err = String::new();
+    for attempt in 0..3u32 {
+        if attempt > 0 {
+            let delay_secs = 10u64 * (1 << (attempt - 1)); // 10s, 20s
+            tracing::info!(
+                attempt,
+                delay_secs,
+                "Retrying optimizer LLM call after delay"
+            );
+            tokio::time::sleep(std::time::Duration::from_secs(delay_secs)).await;
+        }
 
-    if !resp.status().is_success() {
-        let status = resp.status();
-        let text = resp.text().await.unwrap_or_default();
-        return Err(AgentForgeError::LlmError {
-            provider: "optimizer".to_string(),
-            message: format!("HTTP {status}: {text}"),
-        });
+        let send_result = client
+            .post(format!("{}/chat/completions", config.llm_base_url))
+            .header("Authorization", format!("Bearer {}", config.llm_api_key))
+            .header("Content-Type", "application/json")
+            .json(&body)
+            .send()
+            .await;
+
+        let resp = match send_result {
+            Ok(r) => r,
+            Err(e) => {
+                last_err = format!("connection error: {e}");
+                tracing::warn!(attempt, error = %e, "Optimizer LLM connection failed, will retry");
+                continue;
+            }
+        };
+
+        if resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            last_err = "rate limited (429)".to_string();
+            tracing::warn!(attempt, "Optimizer LLM rate-limited, will retry");
+            continue;
+        }
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(AgentForgeError::LlmError {
+                provider: "optimizer".to_string(),
+                message: format!("HTTP {status}: {text}"),
+            });
+        }
+
+        let raw: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| AgentForgeError::HttpError(e.to_string()))?;
+
+        let content = raw["choices"][0]["message"]["content"]
+            .as_str()
+            .unwrap_or("[]");
+
+        return serde_json::from_str(content)
+            .map_err(|e| AgentForgeError::ParseError(format!("LLM returned invalid JSON: {e}")));
     }
 
-    let raw: serde_json::Value = resp
-        .json()
-        .await
-        .map_err(|e| AgentForgeError::HttpError(e.to_string()))?;
+    Err(AgentForgeError::LlmError {
+        provider: "optimizer".to_string(),
+        message: format!("LLM call failed after 3 attempts: {last_err}"),
+    })
+}
 
-    let content = raw["choices"][0]["message"]["content"]
-        .as_str()
-        .unwrap_or("[]");
-
-    serde_json::from_str(content)
-        .map_err(|e| AgentForgeError::ParseError(format!("LLM returned invalid JSON: {e}")))
+/// Bump the patch component of a semver string (e.g. "1.0.0" → "1.0.1").
+/// Exposed for use by other modules in this crate.
+pub fn bump_patch_version_pub(version: &str) -> String {
+    bump_patch_version(version)
 }
 
 fn bump_patch_version(version: &str) -> String {

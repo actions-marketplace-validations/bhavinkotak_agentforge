@@ -231,6 +231,9 @@ fn reorder_instructions(agent: &AgentFile, parent_sha: &str) -> AgentVariant {
         new_agent.system_prompt = new_prompt;
     }
 
+    // Bump the patch version so this variant is distinguishable from its parent
+    new_agent.version = crate::mutations::bump_patch_version_pub(&new_agent.version);
+
     AgentVariant {
         agent: new_agent,
         mutation_type: MutationType::InstructionReorder,

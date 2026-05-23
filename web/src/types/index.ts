@@ -5,6 +5,7 @@ export interface AgentResponse {
   version: string
   sha: string
   parent_sha?: string
+  changelog?: string
   format: string
   promoted: boolean
   is_champion: boolean

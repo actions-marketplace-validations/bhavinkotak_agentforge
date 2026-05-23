@@ -69,7 +69,7 @@ function AgentPicker({ label, agents, value, onChange }: AgentPickerProps) {
         >
           {versions.map(v => (
             <option key={v.id} value={v.id}>
-              {v.version} · {truncate(v.sha, 10)} · {fmtDate(v.created_at)}{v.is_champion ? ' ★' : ''}
+              {v.version} · {truncate(v.sha, 10)} · {fmtDate(v.created_at)}{v.is_champion ? ' ★' : ''}{v.parent_sha ? ' 🤖' : ''}
             </option>
           ))}
         </select>
