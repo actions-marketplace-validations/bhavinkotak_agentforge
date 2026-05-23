@@ -122,6 +122,10 @@ fn parse_prompt_variants(
 }
 
 /// Rewrite tool descriptions to include examples, type constraints, and misuse warnings.
+///
+/// To keep the LLM response compact (and within the 512-token output cap), we only ask for
+/// improved *description strings* per tool — not full tool structures.  The improved strings
+/// are then merged back onto the original tool parameter schemas before building variants.
 pub async fn rewrite_tool_descriptions(
     agent: &AgentFile,
     scorecard: &Scorecard,
@@ -134,120 +138,128 @@ pub async fn rewrite_tool_descriptions(
         ));
     }
 
-    let tools_json = serde_json::to_string_pretty(&agent.tools)
+    if agent.tools.is_empty() {
+        return Err(AgentForgeError::OptimizationError(
+            "No tools to rewrite".to_string(),
+        ));
+    }
+
+    // Build a compact summary: just tool names + current descriptions (no parameter schemas).
+    let tool_summary: Vec<serde_json::Value> = agent
+        .tools
+        .iter()
+        .map(|t| serde_json::json!({"name": t.name, "description": t.description}))
+        .collect();
+    let summary_json = serde_json::to_string(&tool_summary)
         .map_err(|e| AgentForgeError::SerializationError(e.to_string()))?;
 
+    let tool_names: Vec<&str> = agent.tools.iter().map(|t| t.name.as_str()).collect();
+    let names_list = tool_names.join(", ");
+
     let prompt = format!(
-        r#"You are an expert at writing clear AI tool definitions. Improve the following tool descriptions.
+        r#"Improve these tool descriptions for better AI agent performance.
+Tool selection accuracy: {sel:.0}%  Argument correctness: {acc:.0}%
 
-Current tool selection accuracy: {:.0}%
-Current argument correctness: {:.0}%
+Tools: {summary}
 
-Current tools:
-{tools_json}
+Write {n} improved description strings for each tool.
+Rules: add concrete examples, specify exact formats, warn about misuse. Max 30 words per description.
 
-Generate {n} improved versions of the tools array. Each improvement should:
-1. Add concrete examples of valid parameter values
-2. Specify exact format requirements (e.g., "ORD-XXXXXXXX" not just "string")
-3. Add warnings about common misuse patterns
-4. Clarify relationships between parameters
-5. Keep the tool names and structure intact
-
-Respond with a JSON object with key "variants" containing an array of {n} items. Each item is a tools array (same structure as input). Example format: {{"variants": [[{{"name":"tool1","description":"improved","parameters":{{}}}}], [{{"name":"tool1","description":"alt","parameters":{{}}}}]]}}"#,
-        scorecard.dimension_scores.tool_selection * 100.0,
-        scorecard.dimension_scores.argument_correctness * 100.0,
-        tools_json = tools_json,
+Respond with JSON: {{"variants": [{{"tool1_name": "improved desc", "tool2_name": "improved desc"}}, ...]}}
+Tool names to use as keys: {names}
+Example: {{"variants": [{{{first_name}: "short improved description here"}}]}}"#,
+        sel = scorecard.dimension_scores.tool_selection * 100.0,
+        acc = scorecard.dimension_scores.argument_correctness * 100.0,
+        summary = summary_json,
         n = n,
+        names = names_list,
+        first_name = tool_names.first().copied().unwrap_or("tool"),
     );
 
     let response = call_llm_api(&prompt, config, n).await?;
 
-    parse_tool_variants(&response, agent, n)
+    parse_tool_description_variants(&response, agent, n)
 }
 
-fn parse_tool_variants(
+fn parse_tool_description_variants(
     response: &serde_json::Value,
     base_agent: &AgentFile,
     n: usize,
 ) -> Result<Vec<AgentFile>> {
-    // Prefer the "variants" key, then fall back to scanning all keys
-    let arr = if let Some(arr) = response.as_array() {
-        arr.to_vec()
-    } else if let Some(obj) = response.as_object() {
-        if let Some(arr) = obj.get("variants").and_then(|v| v.as_array()) {
-            if !arr.is_empty() {
-                arr.to_vec()
-            } else {
-                return Err(AgentForgeError::ParseError(
-                    "LLM returned empty tool variants array".to_string(),
-                ));
-            }
-        } else {
-            obj.values()
-                .find_map(|v| {
-                    let a = v.as_array()?;
-                    if a.is_empty() {
-                        None
-                    } else {
-                        Some(a.to_vec())
-                    }
-                })
-                .ok_or_else(|| {
-                    AgentForgeError::ParseError(
-                        "LLM did not return a valid array of tool variants".to_string(),
-                    )
-                })?
-        }
-    } else {
-        return Err(AgentForgeError::ParseError(
-            "LLM did not return a valid array of tool variants".to_string(),
-        ));
-    };
+    // Build a set of known tool names for flat-map detection.
+    let tool_names: std::collections::HashSet<&str> =
+        base_agent.tools.iter().map(|t| t.name.as_str()).collect();
 
-    // Flat fallback: if array elements are tool objects (not arrays-of-tools), treat the
-    // whole array as a single tool variant (the LLM returned one improved tool set directly).
-    let flat_fallback = arr.first().map(|v| v.is_object()).unwrap_or(false);
-    let variants: Vec<AgentFile> = if flat_fallback {
-        let parsed_tools: Vec<agentforge_core::ToolDefinition> = arr
+    // Helper: merge a {tool_name -> new_desc} map onto the base agent.
+    let apply_desc_map = |map: &serde_json::Map<String, serde_json::Value>| -> Option<AgentFile> {
+        let new_tools: Vec<agentforge_core::ToolDefinition> = base_agent
+            .tools
             .iter()
-            .filter_map(|t| serde_json::from_value(t.clone()).ok())
-            .collect();
-        if parsed_tools.is_empty() {
-            vec![]
-        } else {
-            let mut new_agent = base_agent.clone();
-            new_agent.tools = parsed_tools;
-            new_agent.version = bump_patch_version(&new_agent.version);
-            vec![new_agent]
-        }
-    } else {
-        arr.iter()
-            .take(n)
-            .filter_map(|v| {
-                let tools = v.as_array()?;
-                let parsed_tools: Vec<agentforge_core::ToolDefinition> = tools
-                    .iter()
-                    .filter_map(|t| serde_json::from_value(t.clone()).ok())
-                    .collect();
-                if parsed_tools.is_empty() {
-                    return None;
+            .map(|t| {
+                let mut updated = t.clone();
+                if let Some(new_desc) = map.get(&t.name).and_then(|v| v.as_str()) {
+                    if !new_desc.trim().is_empty() {
+                        updated.description = new_desc.to_string();
+                    }
                 }
-                let mut new_agent = base_agent.clone();
-                new_agent.tools = parsed_tools;
-                new_agent.version = bump_patch_version(&new_agent.version);
-                Some(new_agent)
+                updated
             })
-            .collect()
+            .collect();
+        let mut new_agent = base_agent.clone();
+        new_agent.tools = new_tools;
+        new_agent.version = bump_patch_version(&new_agent.version);
+        Some(new_agent)
     };
 
-    if variants.is_empty() {
-        return Err(AgentForgeError::OptimizationError(
-            "No valid tool variants produced".to_string(),
-        ));
+    let obj = match response.as_object() {
+        Some(o) => o,
+        None => {
+            return Err(AgentForgeError::ParseError(
+                "LLM tool response is not a JSON object".to_string(),
+            ))
+        }
+    };
+
+    // Preferred: {"variants": [{"tool_name": "new desc", ...}, ...]}
+    if let Some(arr) = obj.get("variants").and_then(|v| v.as_array()) {
+        let result: Vec<AgentFile> = arr
+            .iter()
+            .take(n)
+            .filter_map(|v| apply_desc_map(v.as_object()?))
+            .collect();
+        if !result.is_empty() {
+            return Ok(result);
+        }
     }
 
-    Ok(variants)
+    // Fallback: flat object {"tool_name": "desc", ...} — treat as a single variant.
+    // Only use this path if at least one key matches a known tool name.
+    let looks_like_desc_map = obj
+        .keys()
+        .any(|k| tool_names.contains(k.as_str()));
+    if looks_like_desc_map {
+        if let Some(agent) = apply_desc_map(obj) {
+            return Ok(vec![agent]);
+        }
+    }
+
+    // Last resort: scan all object values for a nested desc map.
+    for val in obj.values() {
+        if let Some(inner) = val.as_object() {
+            if inner.keys().any(|k| tool_names.contains(k.as_str())) {
+                if let Some(agent) = apply_desc_map(inner) {
+                    return Ok(vec![agent]);
+                }
+            }
+        }
+    }
+
+    Err(AgentForgeError::ParseError(
+        "No valid tool description variants parsed from LLM response".to_string(),
+    ))
 }
+
+
 
 /// Tighten the output schema by marking more fields as required and adding enum constraints.
 pub fn tighten_output_schema(agent: &AgentFile) -> Option<AgentFile> {
@@ -691,10 +703,10 @@ mod tests {
         );
     }
 
-    // ── parse_tool_variants ───────────────────────────────────────────────────
+    // ── parse_tool_description_variants ──────────────────────────────────────
 
     #[test]
-    fn parse_tool_variants_from_improved_variants_key() {
+    fn parse_tool_description_variants_from_variants_key() {
         use agentforge_core::ToolDefinition;
         let mut agent = make_agent_with_schema();
         agent.tools = vec![ToolDefinition {
@@ -706,14 +718,32 @@ mod tests {
                 "required": []
             }),
         }];
-        // Each element of the outer array is a *complete array of tools* for one variant.
+        // New format: variants is an array of description maps {tool_name: new_desc}.
         let response = serde_json::json!({
-            "improved_variants": [
-                [{"name": "search", "description": "Search the web for information", "parameters": {"type": "object", "properties": {}, "required": []}}]
+            "variants": [
+                {"search": "Search the web for information. Example: query='rust async'"}
             ]
         });
-        let variants = parse_tool_variants(&response, &agent, 1).unwrap();
+        let variants = parse_tool_description_variants(&response, &agent, 1).unwrap();
         assert_eq!(variants.len(), 1);
-        assert_eq!(variants[0].tools[0].description, "Search the web for information");
+        assert_eq!(variants[0].tools[0].description, "Search the web for information. Example: query='rust async'");
+        // Parameters structure must be preserved unchanged.
+        assert_eq!(variants[0].tools[0].name, "search");
+    }
+
+    #[test]
+    fn parse_tool_description_variants_flat_map_fallback() {
+        use agentforge_core::ToolDefinition;
+        let mut agent = make_agent_with_schema();
+        agent.tools = vec![ToolDefinition {
+            name: "search".to_string(),
+            description: "Search for things".to_string(),
+            parameters: serde_json::json!({"type": "object", "properties": {}, "required": []}),
+        }];
+        // LLM returns flat map without "variants" wrapper — should still work.
+        let response = serde_json::json!({"search": "Search the web. Example: query='rust async'"});
+        let variants = parse_tool_description_variants(&response, &agent, 1).unwrap();
+        assert_eq!(variants.len(), 1);
+        assert_eq!(variants[0].tools[0].description, "Search the web. Example: query='rust async'");
     }
 }
