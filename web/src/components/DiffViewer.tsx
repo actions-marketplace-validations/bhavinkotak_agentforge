@@ -53,6 +53,13 @@ interface Props {
 
 export function DiffViewer({ diff }: Props) {
   const lines = diff.system_prompt_diff?.split('\n') ?? []
+  const hasChanges =
+    lines.length > 0 ||
+    diff.tool_changes.added.length > 0 ||
+    diff.tool_changes.removed.length > 0 ||
+    diff.tool_changes.modified.length > 0 ||
+    diff.constraint_changes.added.length > 0 ||
+    diff.constraint_changes.removed.length > 0
 
   return (
     <div className="space-y-6">
@@ -61,6 +68,12 @@ export function DiffViewer({ diff }: Props) {
         <AgentCard label="v1" agent={diff.v1} />
         <AgentCard label="v2" agent={diff.v2} />
       </div>
+
+      {!hasChanges && (
+        <p className="rounded-md border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-500">
+          No content differences found between these two versions.
+        </p>
+      )}
 
       {/* System prompt diff */}
       {lines.length > 0 && (
