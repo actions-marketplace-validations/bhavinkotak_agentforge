@@ -95,8 +95,9 @@ impl Optimizer {
             "Starting optimization cycle"
         );
 
-        // Priority 1: Prompt rewrite (if task completion or instruction adherence is low)
-        if scorecard.dimension_scores.task_completion < 0.8
+        // Priority 1: Prompt rewrite (if overall or key dimension performance is low)
+        if scorecard.aggregate_score < 0.8
+            || scorecard.dimension_scores.task_completion < 0.8
             || scorecard.dimension_scores.instruction_adherence < 0.8
         {
             let n = (self.config.max_variants / 5).max(2);
@@ -214,19 +215,34 @@ fn reorder_instructions(agent: &AgentFile, parent_sha: &str) -> AgentVariant {
     });
     new_agent.constraints = constraints;
 
-    // Prepend a summary of critical constraints to the system prompt
-    if !new_agent.constraints.is_empty() {
-        let critical = new_agent
+    // Build the critical rules block from explicit constraints or implicit prompt rules
+    let rules_block: Vec<String> = if !new_agent.constraints.is_empty() {
+        new_agent
             .constraints
             .iter()
             .take(3)
             .map(|c| format!("- {}", c))
-            .collect::<Vec<_>>()
-            .join("\n");
+            .collect()
+    } else {
+        // Extract implicit behavioural rules from the system prompt text
+        let keywords = ["never", "always", "must", "do not", "don't", "ensure", "require"];
+        new_agent
+            .system_prompt
+            .lines()
+            .filter(|line| {
+                let lower = line.to_lowercase();
+                keywords.iter().any(|kw| lower.contains(kw))
+            })
+            .take(3)
+            .map(|line| format!("- {}", line.trim().trim_start_matches('-').trim()))
+            .collect()
+    };
 
+    if !rules_block.is_empty() {
         let new_prompt = format!(
-            "CRITICAL RULES (always follow these first):\n{}\n\n{}",
-            critical, new_agent.system_prompt
+            "Key Behavioral Rules (follow these first):\n{}\n\n{}",
+            rules_block.join("\n"),
+            new_agent.system_prompt
         );
         new_agent.system_prompt = new_prompt;
     }

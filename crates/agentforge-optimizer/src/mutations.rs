@@ -22,31 +22,36 @@ pub async fn rewrite_prompt(
         scorecard.dimension_scores.instruction_adherence * 100.0,
     );
 
+    // Truncate system prompt to avoid overwhelming a small local model.
+    // We pass the first 600 chars for context, then ask for concise focused improvements.
+    let prompt_excerpt = if agent.system_prompt.len() > 600 {
+        format!(
+            "{}... [prompt continues]",
+            &agent.system_prompt[..600]
+        )
+    } else {
+        agent.system_prompt.clone()
+    };
+
     let prompt = format!(
-        r#"You are an expert AI prompt engineer. Rewrite the following agent system prompt to improve its performance.
+        r#"You are an expert AI prompt engineer. Improve the agent system prompt below.
 
 Current performance issues:
 {failure_summary}
 
-Original system prompt:
+Beginning of system prompt (first 600 chars):
 ---
-{system_prompt}
+{prompt_excerpt}
 ---
 
-Current constraints:
-{constraints}
+Generate {n} concise improved system prompts (max 150 words each) that:
+1. Address the specific performance gaps above
+2. Keep the same role and purpose
+3. Add clearer instructions for common failure cases
 
-Generate {n} improved versions of the system prompt. Each version should:
-1. Be more specific and unambiguous
-2. Make constraints clearer and harder to violate
-3. Provide better guidance on when and how to use tools
-4. Address the specific performance gaps above
-5. Keep the core purpose and tone intact
-
-Respond with a JSON array of {n} strings, each being a complete improved system prompt."#,
+Respond with a JSON object with key "variants" containing an array of {n} short improved system prompt strings. Example format: {{"variants": ["improved prompt 1", "improved prompt 2"]}}"#,
         failure_summary = failure_summary,
-        system_prompt = agent.system_prompt,
-        constraints = agent.constraints.join("\n"),
+        prompt_excerpt = prompt_excerpt,
         n = n,
     );
 
@@ -60,25 +65,34 @@ fn parse_prompt_variants(
     base_agent: &AgentFile,
     n: usize,
 ) -> Result<Vec<AgentFile>> {
-    // Try to find an array of strings in the response — the LLM may use any key name
+    // Prefer the "variants" key, then fall back to scanning all keys for a non-empty array
     let arr = if let Some(arr) = response.as_array() {
         arr.to_vec()
     } else if let Some(obj) = response.as_object() {
-        // Scan all keys and pick the first that holds a non-empty array
-        obj.values()
-            .find_map(|v| {
-                let a = v.as_array()?;
-                if a.is_empty() {
-                    None
-                } else {
-                    Some(a.to_vec())
-                }
-            })
-            .ok_or_else(|| {
-                AgentForgeError::ParseError(
-                    "LLM did not return a valid array of prompts".to_string(),
-                )
-            })?
+        if let Some(arr) = obj.get("variants").and_then(|v| v.as_array()) {
+            if !arr.is_empty() {
+                arr.to_vec()
+            } else {
+                return Err(AgentForgeError::ParseError(
+                    "LLM returned empty variants array".to_string(),
+                ));
+            }
+        } else {
+            obj.values()
+                .find_map(|v| {
+                    let a = v.as_array()?;
+                    if a.is_empty() {
+                        None
+                    } else {
+                        Some(a.to_vec())
+                    }
+                })
+                .ok_or_else(|| {
+                    AgentForgeError::ParseError(
+                        "LLM did not return a valid array of prompts".to_string(),
+                    )
+                })?
+        }
     } else {
         return Err(AgentForgeError::ParseError(
             "LLM did not return a valid array of prompts".to_string(),
@@ -139,7 +153,7 @@ Generate {n} improved versions of the tools array. Each improvement should:
 4. Clarify relationships between parameters
 5. Keep the tool names and structure intact
 
-Respond with a JSON array of {n} items. Each item is a tools array (same structure as input)."#,
+Respond with a JSON object with key "variants" containing an array of {n} items. Each item is a tools array (same structure as input). Example format: {{"variants": [[{{"name":"tool1","description":"improved","parameters":{{}}}}], [{{"name":"tool1","description":"alt","parameters":{{}}}}]]}}"#,
         scorecard.dimension_scores.tool_selection * 100.0,
         scorecard.dimension_scores.argument_correctness * 100.0,
         tools_json = tools_json,
@@ -156,48 +170,75 @@ fn parse_tool_variants(
     base_agent: &AgentFile,
     n: usize,
 ) -> Result<Vec<AgentFile>> {
-    // Scan any array field — the LLM may use any key name (e.g. "tools", "variants", "improved_tools")
+    // Prefer the "variants" key, then fall back to scanning all keys
     let arr = if let Some(arr) = response.as_array() {
         arr.to_vec()
     } else if let Some(obj) = response.as_object() {
-        obj.values()
-            .find_map(|v| {
-                let a = v.as_array()?;
-                if a.is_empty() {
-                    None
-                } else {
-                    Some(a.to_vec())
-                }
-            })
-            .ok_or_else(|| {
-                AgentForgeError::ParseError(
-                    "LLM did not return a valid array of tool variants".to_string(),
-                )
-            })?
+        if let Some(arr) = obj.get("variants").and_then(|v| v.as_array()) {
+            if !arr.is_empty() {
+                arr.to_vec()
+            } else {
+                return Err(AgentForgeError::ParseError(
+                    "LLM returned empty tool variants array".to_string(),
+                ));
+            }
+        } else {
+            obj.values()
+                .find_map(|v| {
+                    let a = v.as_array()?;
+                    if a.is_empty() {
+                        None
+                    } else {
+                        Some(a.to_vec())
+                    }
+                })
+                .ok_or_else(|| {
+                    AgentForgeError::ParseError(
+                        "LLM did not return a valid array of tool variants".to_string(),
+                    )
+                })?
+        }
     } else {
         return Err(AgentForgeError::ParseError(
             "LLM did not return a valid array of tool variants".to_string(),
         ));
     };
 
-    let variants: Vec<AgentFile> = arr
-        .iter()
-        .take(n)
-        .filter_map(|v| {
-            let tools = v.as_array()?;
-            let parsed_tools: Vec<agentforge_core::ToolDefinition> = tools
-                .iter()
-                .filter_map(|t| serde_json::from_value(t.clone()).ok())
-                .collect();
-            if parsed_tools.is_empty() {
-                return None;
-            }
+    // Flat fallback: if array elements are tool objects (not arrays-of-tools), treat the
+    // whole array as a single tool variant (the LLM returned one improved tool set directly).
+    let flat_fallback = arr.first().map(|v| v.is_object()).unwrap_or(false);
+    let variants: Vec<AgentFile> = if flat_fallback {
+        let parsed_tools: Vec<agentforge_core::ToolDefinition> = arr
+            .iter()
+            .filter_map(|t| serde_json::from_value(t.clone()).ok())
+            .collect();
+        if parsed_tools.is_empty() {
+            vec![]
+        } else {
             let mut new_agent = base_agent.clone();
             new_agent.tools = parsed_tools;
             new_agent.version = bump_patch_version(&new_agent.version);
-            Some(new_agent)
-        })
-        .collect();
+            vec![new_agent]
+        }
+    } else {
+        arr.iter()
+            .take(n)
+            .filter_map(|v| {
+                let tools = v.as_array()?;
+                let parsed_tools: Vec<agentforge_core::ToolDefinition> = tools
+                    .iter()
+                    .filter_map(|t| serde_json::from_value(t.clone()).ok())
+                    .collect();
+                if parsed_tools.is_empty() {
+                    return None;
+                }
+                let mut new_agent = base_agent.clone();
+                new_agent.tools = parsed_tools;
+                new_agent.version = bump_patch_version(&new_agent.version);
+                Some(new_agent)
+            })
+            .collect()
+    };
 
     if variants.is_empty() {
         return Err(AgentForgeError::OptimizationError(
@@ -298,6 +339,7 @@ async fn call_llm_api(
             }
         ],
         "temperature": 0.7,
+        "max_tokens": 512,
         "response_format": {"type": "json_object"},
         "n": 1
     });
