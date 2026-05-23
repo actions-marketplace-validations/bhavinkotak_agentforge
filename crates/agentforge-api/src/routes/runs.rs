@@ -579,8 +579,29 @@ async fn run_iterative_optimization(
                 current_agent = improved;
             }
             Err(e) => {
-                tracing::warn!(error = %e, round, "Failed to save improved agent version");
-                break "failed";
+                // If a duplicate-SHA error, the version already exists — look it up
+                // and reuse it rather than aborting the loop.
+                let is_dup = e.to_string().contains("duplicate key")
+                    || e.to_string().contains("unique constraint");
+                if is_dup {
+                    tracing::info!(round, sha = %new_sha, "SHA already exists; reusing existing version");
+                    if let Ok(Some(existing)) = agent_repo.find_by_sha(&new_sha).await {
+                        best_agent_id = Some(existing.id);
+                        parent_sha = new_sha;
+                        current_scorecard = agentforge_core::Scorecard {
+                            aggregate_score: round_best_score,
+                            ..current_scorecard
+                        };
+                        current_score = round_best_score;
+                        current_agent = improved;
+                        tracing::info!(%run_id, round, existing_id = %existing.id, score = round_best_score, "Reused existing agent version");
+                    } else {
+                        tracing::warn!(round, "SHA conflict but version not found; skipping save");
+                    }
+                } else {
+                    tracing::warn!(error = %e, round, "Failed to save improved agent version");
+                    break "failed";
+                }
             }
         }
 

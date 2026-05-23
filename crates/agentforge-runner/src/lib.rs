@@ -4,7 +4,7 @@ pub mod worker;
 
 pub use llm::{
     AnthropicClient, LlmClient, LlmMessage, LlmRequest, LlmResponse, LlmRole, NvidiaClient,
-    OpenAiClient, ToolCall,
+    OllamaClient, OpenAiClient, ToolCall,
 };
 pub use runner::{AgentRunner, RunResult, RunnerConfig};
 

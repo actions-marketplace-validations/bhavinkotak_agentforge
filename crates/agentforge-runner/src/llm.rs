@@ -646,6 +646,53 @@ impl LlmClient for NvidiaClient {
     }
 }
 
+/// Ollama local LLM client.
+///
+/// Talks to the Ollama OpenAI-compatible endpoint at `http://localhost:11434/v1`
+/// (or a custom `AGENTFORGE_OLLAMA_BASE_URL`).  Requires no API key.  Always
+/// overrides the model in the request with the configured Ollama model so that
+/// agent files using cloud model IDs (e.g. `gpt-4o`) work transparently.
+pub struct OllamaClient {
+    inner: OpenAiClient,
+}
+
+impl OllamaClient {
+    pub fn new(base_url: impl Into<String>, model: impl Into<String>) -> Self {
+        Self {
+            inner: OpenAiClient::new_with_provider(base_url, "ollama", model, "ollama"),
+        }
+    }
+
+    pub fn from_env() -> Self {
+        let base_url = std::env::var("AGENTFORGE_OLLAMA_BASE_URL")
+            .unwrap_or_else(|_| "http://localhost:11434/v1".to_string());
+        let model = std::env::var("AGENTFORGE_OLLAMA_MODEL")
+            .unwrap_or_else(|_| "llama3.2:3b".to_string());
+        Self::new(base_url, model)
+    }
+}
+
+#[async_trait]
+impl LlmClient for OllamaClient {
+    async fn complete(&self, request: LlmRequest) -> Result<LlmResponse> {
+        // Override the model with the configured Ollama model so that agent
+        // files referencing cloud models (e.g. "gpt-4o") work transparently.
+        let request = LlmRequest {
+            model: self.inner.model_id().to_string(),
+            ..request
+        };
+        self.inner.complete(request).await
+    }
+
+    fn provider_name(&self) -> &str {
+        "ollama"
+    }
+
+    fn model_id(&self) -> &str {
+        self.inner.model_id()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

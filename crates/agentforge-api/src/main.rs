@@ -5,7 +5,7 @@ use agentforge_db::create_pool;
 use agentforge_gatekeeper::GatekeeperConfig;
 use agentforge_observability::build_exporter;
 use agentforge_optimizer::OptimizerConfig;
-use agentforge_runner::{AnthropicClient, LlmClient, NvidiaClient, OpenAiClient};
+use agentforge_runner::{AnthropicClient, LlmClient, NvidiaClient, OllamaClient, OpenAiClient};
 use agentforge_scorer::ScorerConfig;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
@@ -36,6 +36,7 @@ async fn main() -> anyhow::Result<()> {
                 NvidiaClient::from_env()
                     .expect("NVIDIA_API_KEY must be set when using nvidia provider"),
             ) as Arc<dyn LlmClient>,
+            "ollama" => Arc::new(OllamaClient::from_env()) as Arc<dyn LlmClient>,
             _ => Arc::new(
                 OpenAiClient::from_env()
                     .expect("OPENAI_API_KEY must be set when using openai provider"),
@@ -55,6 +56,11 @@ async fn main() -> anyhow::Result<()> {
         "nvidia" => (
             "https://integrate.api.nvidia.com/v1".to_string(),
             std::env::var("NVIDIA_API_KEY").unwrap_or_default(),
+        ),
+        "ollama" => (
+            std::env::var("AGENTFORGE_OLLAMA_BASE_URL")
+                .unwrap_or_else(|_| "http://localhost:11434/v1".to_string()),
+            "ollama".to_string(),
         ),
         _ => (
             "https://api.openai.com/v1".to_string(),
