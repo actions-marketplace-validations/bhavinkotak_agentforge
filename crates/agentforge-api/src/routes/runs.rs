@@ -32,7 +32,7 @@ pub struct StartRunRequest {
     pub scenario_count: Option<u32>,
     pub seed: Option<i64>,
     pub concurrency: Option<u32>,
-    /// Optimization target score 0.0–1.0 (default: 0.95).
+    /// Optimization target score 0.0–1.0 (default: 0.92).
     /// Also used as the pass threshold for the gatekeeper.
     pub threshold: Option<f64>,
     /// LLM provider for the agent under test (`openai` | `anthropic` | `nvidia` | `ollama` | `bedrock`).
@@ -241,7 +241,7 @@ pub async fn start_run(
 
     let state_clone = state.clone();
     let auto_optimize = req.auto_optimize.unwrap_or(true);
-    let opt_threshold = req.threshold.unwrap_or(0.95);
+    let opt_threshold = req.threshold.unwrap_or(0.92);
     let max_opt_iterations = req.max_opt_iterations.unwrap_or(5);
     tokio::spawn(async move {
         run_evaluation_background(
@@ -1764,8 +1764,8 @@ mod tests {
     }
 
     #[test]
-    fn opt_threshold_default_is_0_95() {
-        // The handler uses `req.threshold.unwrap_or(0.95)`.
+    fn opt_threshold_default_is_0_92() {
+        // The handler uses `req.threshold.unwrap_or(0.92)`.
         let req = StartRunRequest {
             agent_id: Uuid::new_v4(),
             scenario_count: None,
@@ -1777,8 +1777,8 @@ mod tests {
             auto_optimize: None,
             max_opt_iterations: None,
         };
-        let threshold = req.threshold.unwrap_or(0.95);
-        assert!((threshold - 0.95).abs() < 1e-9);
+        let threshold = req.threshold.unwrap_or(0.92);
+        assert!((threshold - 0.92).abs() < 1e-9);
     }
 
     #[test]
