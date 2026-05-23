@@ -121,12 +121,12 @@ fn unified_diff(old: &str, new: &str) -> Option<String> {
             edits.push((' ', old_lines[i]));
             i += 1;
             j += 1;
-        } else if j < n && (i >= m || dp[i + 1][j] >= dp[i][j + 1]) {
-            edits.push(('+', new_lines[j]));
-            j += 1;
-        } else {
+        } else if i < m && (j >= n || dp[i + 1][j] >= dp[i][j + 1]) {
             edits.push(('-', old_lines[i]));
             i += 1;
+        } else {
+            edits.push(('+', new_lines[j]));
+            j += 1;
         }
     }
 
