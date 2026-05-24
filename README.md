@@ -49,10 +49,11 @@ Humans set the quality bar. The platform handles the repetitive evaluation and i
 | **F-02 Scenario Generator** | Generates N test scenarios via schema-derived, adversarial, and domain-seeded strategies |
 | **F-03 Agent Runner** | Parallel execution with full trace capture, retry logic, and token usage tracking |
 | **F-04 Trace Scorer** | Six-dimension weighted scoring via deterministic assertions + LLM-as-judge |
-| **F-05 Optimizer** | Generates 5–20 candidate agent variants per cycle using mutation strategies |
+| **F-05 Optimizer** | Iterative self-improvement loop: generates candidate variants, quick-evals on a 25-scenario subset, saves best; terminates on `converged` / `no_improvement` / `max_iterations` / `failed` |
 | **F-06 Gatekeeper** | Three-gate promotion logic: score gate + regression gate + stability gate |
-| **F-07 REST API** | Axum-based API with endpoints for agents, runs, diffs, and results |
+| **F-07 REST API** | Axum-based API with endpoints for agents, runs, diffs, and results; `GET /agents?name=` filter for version history |
 | **F-08 CLI** | `agentforge run`, `diff`, `promote` commands with GitHub Actions support |
+| **F-09 Web Dashboard** | React UI: agents list grouped by name with version count badge; agent detail page with Version History card; LCS-based unified diff viewer |
 
 ---
 
@@ -379,7 +380,7 @@ An **OpenAPI 3.1 spec** is available at [docs/openapi.yaml](docs/openapi.yaml) a
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/api/v1/agents` | List all registered agent versions (paginated: `?limit=50&offset=0`) |
+| `GET` | `/api/v1/agents` | List all registered agent versions (paginated: `?limit=50&offset=0`); filter by name with `?name=<agent-name>` |
 | `POST` | `/api/v1/agents` | Upload and register a new agent version |
 | `GET` | `/api/v1/agents/:id` | Get agent version by ID |
 | `PATCH` | `/api/v1/agents/:id` | Update agent metadata (`is_champion`, `changelog`) |
@@ -404,11 +405,15 @@ An **OpenAPI 3.1 spec** is available at [docs/openapi.yaml](docs/openapi.yaml) a
 > **Scenario count limit on `POST /runs`:** `scenario_count` must not exceed `AGENTFORGE_MAX_SCENARIOS`
 > (default: `2000`). Requests that exceed this value are rejected with HTTP 400.
 
-> **`auto_optimize` on `POST /runs`:** set `"auto_optimize": true` to enable the self-improvement loop.
-> After the eval completes, if the aggregate score is below `0.85`, the optimizer generates up to 5
-> candidate variants (prompt rewrites, tool-description rewrites, example injections, constraint
-> tightenings), quick-evaluates each on a 10-scenario subset, and saves the best-performing variant
-> as a new agent version in the database. The parent SHA is recorded for full lineage tracking.
+> **`auto_optimize` on `POST /runs`:** set `"auto_optimize": true` to enable the iterative self-improvement loop.
+> After the eval completes, if the aggregate score is below the `threshold` (default: **0.92**), the optimizer
+> enters a round-based loop. Each round it generates candidate variants (prompt rewrites, tool-description
+> rewrites, example injections, constraint tightenings), quick-evaluates each on a 25-scenario subset, and
+> saves the best-performing variant if it improves by more than 1 percentage point. The loop terminates with
+> a status of `converged` (score ≥ threshold), `no_improvement` (no variant helped), `max_iterations` (hit
+> `max_opt_iterations`, default 5), or `failed` (unrecoverable error). The parent SHA is recorded on every
+> saved variant for full lineage tracking. The `opt_status`, `opt_rounds`, `opt_best_score`, and
+> `opt_best_agent_id` fields on the run record reflect the final loop state.
 
 > **Authentication:** set `AGENTFORGE_API_KEY` to require a Bearer token on all `/api/v1/*` endpoints.
 > Requests without a valid `Authorization: Bearer <key>` header will receive HTTP 401. The `/health`
@@ -432,7 +437,7 @@ curl -X POST http://localhost:8080/api/v1/runs \
     "scenario_count": 100,
     "concurrency": 10,
     "seed": 42,
-    "threshold": 0.85,
+    "threshold": 0.92,
     "provider": "openai",
     "judge_provider": "anthropic",
     "auto_optimize": true
@@ -797,6 +802,34 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for dev environment setup, commit message
 | Cost optimizer | ✅ Implemented — model downgrade recommendations via `--cost-optimize` CLI flag |
 
 > **Web dashboard** (`web/`) is already included in this repo and served via the Docker Compose stack on port 3000.
+
+---
+
+## Web Dashboard
+
+The React/TypeScript dashboard is served on port 3000 (Docker) or `npm run dev` (port 5173) from the `web/` directory.
+
+### Agents List
+
+Agents are grouped by name so every agent family appears as a single row:
+- **Latest Version** column shows the most recently created version.
+- **Versions** count badge (stack icon) shows how many versions exist for that name.
+- Click a row to open the Agent Detail page.
+
+### Agent Detail
+
+- **Summary panel** — model, status, system prompt, tools, constraints.
+- **Score History** — chart of aggregate scores over time.
+- **Version History** — card listing all versions for the same agent name, sorted by semver ascending. The current version is highlighted with an indigo background and a `current` badge. Click any row to navigate to that version. Click the diff icon to compare system prompts.
+
+### Diff Viewer
+
+The diff viewer uses a real LCS-based unified diff algorithm:
+- Removed lines are shown in red.
+- Added lines are shown in green.
+- Unchanged context lines are shown in gray.
+
+Trigger a diff from the Runs page (scorecard diff between two versions) or from the Version History card (system-prompt diff between any two agent versions).
 
 ---
 

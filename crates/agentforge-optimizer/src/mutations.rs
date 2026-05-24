@@ -25,10 +25,7 @@ pub async fn rewrite_prompt(
     // Truncate system prompt to avoid overwhelming a small local model.
     // We pass the first 600 chars for context, then ask for concise focused improvements.
     let prompt_excerpt = if agent.system_prompt.len() > 600 {
-        format!(
-            "{}... [prompt continues]",
-            &agent.system_prompt[..600]
-        )
+        format!("{}... [prompt continues]", &agent.system_prompt[..600])
     } else {
         agent.system_prompt.clone()
     };
@@ -234,9 +231,7 @@ fn parse_tool_description_variants(
 
     // Fallback: flat object {"tool_name": "desc", ...} — treat as a single variant.
     // Only use this path if at least one key matches a known tool name.
-    let looks_like_desc_map = obj
-        .keys()
-        .any(|k| tool_names.contains(k.as_str()));
+    let looks_like_desc_map = obj.keys().any(|k| tool_names.contains(k.as_str()));
     if looks_like_desc_map {
         if let Some(agent) = apply_desc_map(obj) {
             return Ok(vec![agent]);
@@ -258,8 +253,6 @@ fn parse_tool_description_variants(
         "No valid tool description variants parsed from LLM response".to_string(),
     ))
 }
-
-
 
 /// Tighten the output schema by marking more fields as required and adding enum constraints.
 pub fn tighten_output_schema(agent: &AgentFile) -> Option<AgentFile> {
@@ -694,11 +687,17 @@ mod tests {
             })
             .collect();
         let result = inject_few_shot_examples(&agent, &traces);
-        assert!(result.is_ok(), "inject_few_shot_examples failed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "inject_few_shot_examples failed: {:?}",
+            result.err()
+        );
         let variant = result.unwrap();
         // System prompt must contain the original content and the examples section
         assert!(
-            variant.system_prompt.contains("Examples of Excellent Responses"),
+            variant
+                .system_prompt
+                .contains("Examples of Excellent Responses"),
             "Injected prompt must contain the examples section"
         );
     }
@@ -726,7 +725,10 @@ mod tests {
         });
         let variants = parse_tool_description_variants(&response, &agent, 1).unwrap();
         assert_eq!(variants.len(), 1);
-        assert_eq!(variants[0].tools[0].description, "Search the web for information. Example: query='rust async'");
+        assert_eq!(
+            variants[0].tools[0].description,
+            "Search the web for information. Example: query='rust async'"
+        );
         // Parameters structure must be preserved unchanged.
         assert_eq!(variants[0].tools[0].name, "search");
     }
@@ -744,6 +746,9 @@ mod tests {
         let response = serde_json::json!({"search": "Search the web. Example: query='rust async'"});
         let variants = parse_tool_description_variants(&response, &agent, 1).unwrap();
         assert_eq!(variants.len(), 1);
-        assert_eq!(variants[0].tools[0].description, "Search the web. Example: query='rust async'");
+        assert_eq!(
+            variants[0].tools[0].description,
+            "Search the web. Example: query='rust async'"
+        );
     }
 }

@@ -3,17 +3,17 @@
 all-features = false
 
 [advisories]
-db-path = "~/.cargo/advisory-db"
-db-urls = ["https://github.com/rustsec/advisory-db"]
-
-[[advisories.ignore]]
-id = "RUSTSEC-2023-0071"
-# rsa 0.9.x Marvin Attack timing side-channel.
-# Transitive dep via sqlx-mysql (pulled in by sqlx proc-macro crate at build time).
-# AgentForge only uses the postgres runtime feature; RSA is never invoked.
-# No upstream fix is available. Tracked: https://github.com/RustCrypto/RSA/issues/19
+version = 2
+ignore = [
+    # rsa 0.9.x Marvin Attack timing side-channel.
+    # Transitive dep via sqlx-mysql (pulled in by sqlx proc-macro crate at build time).
+    # AgentForge only uses the postgres runtime feature; RSA is never invoked.
+    # No upstream fix is available. Tracked: https://github.com/RustCrypto/RSA/issues/19
+    { id = "RUSTSEC-2023-0071" },
+]
 
 [licenses]
+version = 2
 allow = [
     "MIT",
     "Apache-2.0",
@@ -26,16 +26,6 @@ allow = [
     "Zlib",
     "OpenSSL",
 ]
-deny = ["GPL-2.0", "GPL-3.0", "AGPL-1.0", "AGPL-3.0"]
-copyleft = "warn"
-allow-osi-fsf-free = "neither"
-default = "deny"
-confidence-threshold = 0.8
-
-[[licenses.clarify]]
-name = "ring"
-expression = "MIT AND ISC AND OpenSSL"
-license-files = [{ path = "LICENSE", hash = 0xbd0eed23 }]
 
 [bans]
 multiple-versions = "warn"

@@ -225,7 +225,9 @@ fn reorder_instructions(agent: &AgentFile, parent_sha: &str) -> AgentVariant {
             .collect()
     } else {
         // Extract implicit behavioural rules from the system prompt text
-        let keywords = ["never", "always", "must", "do not", "don't", "ensure", "require"];
+        let keywords = [
+            "never", "always", "must", "do not", "don't", "ensure", "require",
+        ];
         new_agent
             .system_prompt
             .lines()
@@ -320,7 +322,10 @@ mod tests {
     fn reorder_puts_never_constraints_first() {
         let agent = make_agent();
         let variant = reorder_instructions(&agent, "sha_test");
-        assert!(variant.agent.system_prompt.starts_with("Key Behavioral Rules"));
+        assert!(variant
+            .agent
+            .system_prompt
+            .starts_with("Key Behavioral Rules"));
         assert!(variant.agent.system_prompt.contains("Never share"));
     }
 
@@ -657,7 +662,10 @@ mod tests {
     #[test]
     fn optimizer_config_default_base_url() {
         let cfg = OptimizerConfig::default();
-        assert!(cfg.llm_base_url.starts_with("https://"), "base_url must be https");
+        assert!(
+            cfg.llm_base_url.starts_with("https://"),
+            "base_url must be https"
+        );
     }
 
     // ── MutationType equality ─────────────────────────────────────────────────
@@ -665,7 +673,10 @@ mod tests {
     #[test]
     fn mutation_type_eq() {
         assert_eq!(MutationType::PromptRewrite, MutationType::PromptRewrite);
-        assert_ne!(MutationType::PromptRewrite, MutationType::InstructionReorder);
+        assert_ne!(
+            MutationType::PromptRewrite,
+            MutationType::InstructionReorder
+        );
     }
 
     #[test]
@@ -686,7 +697,11 @@ mod tests {
         ];
         let strings: Vec<String> = types.iter().map(|t| t.to_string()).collect();
         let unique: std::collections::HashSet<_> = strings.iter().collect();
-        assert_eq!(unique.len(), strings.len(), "All MutationType display strings must be distinct");
+        assert_eq!(
+            unique.len(),
+            strings.len(),
+            "All MutationType display strings must be distinct"
+        );
     }
 
     // ── reorder_instructions version bump ────────────────────────────────────
@@ -768,19 +783,26 @@ mod tests {
         agent.constraints = (0..6).map(|i| format!("Never do thing {i}.")).collect();
         let v = reorder_instructions(&agent, "sha");
         // The "CRITICAL RULES" block includes at most 3 lines
-        let critical_section = v.agent.system_prompt
+        let critical_section = v
+            .agent
+            .system_prompt
             .split("\n\n")
             .next()
             .unwrap_or_default();
-        let lines: Vec<&str> = critical_section.lines().filter(|l| l.starts_with("- ")).collect();
-        assert!(lines.len() <= 3, "Only top 3 constraints should be in the CRITICAL block");
+        let lines: Vec<&str> = critical_section
+            .lines()
+            .filter(|l| l.starts_with("- "))
+            .collect();
+        assert!(
+            lines.len() <= 3,
+            "Only top 3 constraints should be in the CRITICAL block"
+        );
     }
 
     // ── generate_variants: deterministic behaviour ────────────────────────────
 
     #[tokio::test]
     async fn schema_tighten_applied_when_schema_compliance_low() {
-        use agentforge_core::ToolDefinition;
         let mut agent = make_agent();
         // Add an output schema so tighten_output_schema can apply
         agent.output_schema = Some(serde_json::json!({
@@ -807,7 +829,10 @@ mod tests {
         let has_schema = result
             .mutation_types_applied
             .contains(&MutationType::OutputSchemaTighten);
-        assert!(has_schema, "OutputSchemaTighten must be applied when schema_compliance < 0.85");
+        assert!(
+            has_schema,
+            "OutputSchemaTighten must be applied when schema_compliance < 0.85"
+        );
     }
 
     #[tokio::test]
@@ -831,7 +856,10 @@ mod tests {
         let has_schema = result
             .mutation_types_applied
             .contains(&MutationType::OutputSchemaTighten);
-        assert!(!has_schema, "OutputSchemaTighten must not be applied when agent has no schema");
+        assert!(
+            !has_schema,
+            "OutputSchemaTighten must not be applied when agent has no schema"
+        );
     }
 
     #[tokio::test]
@@ -856,7 +884,10 @@ mod tests {
         let has_schema = result
             .mutation_types_applied
             .contains(&MutationType::OutputSchemaTighten);
-        assert!(!has_schema, "OutputSchemaTighten must not apply when schema_compliance >= 0.85");
+        assert!(
+            !has_schema,
+            "OutputSchemaTighten must not apply when schema_compliance >= 0.85"
+        );
     }
 
     #[tokio::test]
@@ -876,7 +907,10 @@ mod tests {
             .await
             .unwrap();
         for v in &result.variants {
-            assert_eq!(v.agent.name, "original-agent-name", "agent name must be preserved in all variants");
+            assert_eq!(
+                v.agent.name, "original-agent-name",
+                "agent name must be preserved in all variants"
+            );
         }
     }
 
@@ -924,6 +958,9 @@ mod tests {
         let has_tool_rewrite = result
             .mutation_types_applied
             .contains(&MutationType::ToolDescriptionRewrite);
-        assert!(!has_tool_rewrite, "ToolDescriptionRewrite must not apply when agent has no tools");
+        assert!(
+            !has_tool_rewrite,
+            "ToolDescriptionRewrite must not apply when agent has no tools"
+        );
     }
 }

@@ -26,6 +26,30 @@ use crate::{
     state::AppState,
 };
 
+/// Parameters for the background evaluation task.
+struct EvalJobParams {
+    run_id: Uuid,
+    agent: agentforge_core::AgentFile,
+    agent_id: Uuid,
+    scenario_count: u32,
+    concurrency: u32,
+    auto_optimize: bool,
+    opt_threshold: f64,
+    max_opt_iterations: u32,
+}
+
+/// Parameters for the iterative self-improvement loop.
+struct OptJobParams {
+    run_id: Uuid,
+    initial_agent: agentforge_core::AgentFile,
+    agent_id: Uuid,
+    initial_scorecard: agentforge_core::Scorecard,
+    passing_traces: Vec<Trace>,
+    scenarios: Vec<agentforge_core::Scenario>,
+    threshold: f64,
+    max_iterations: u32,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct StartRunRequest {
     pub agent_id: Uuid,
@@ -246,14 +270,16 @@ pub async fn start_run(
     tokio::spawn(async move {
         run_evaluation_background(
             state_clone,
-            run_id,
-            agent_file,
-            req.agent_id,
-            scenario_count,
-            concurrency,
-            auto_optimize,
-            opt_threshold,
-            max_opt_iterations,
+            EvalJobParams {
+                run_id,
+                agent: agent_file,
+                agent_id: req.agent_id,
+                scenario_count,
+                concurrency,
+                auto_optimize,
+                opt_threshold,
+                max_opt_iterations,
+            },
         )
         .await;
     });
@@ -261,17 +287,17 @@ pub async fn start_run(
     Ok((StatusCode::ACCEPTED, Json(run.into())))
 }
 
-async fn run_evaluation_background(
-    state: Arc<AppState>,
-    run_id: Uuid,
-    agent: agentforge_core::AgentFile,
-    agent_id: Uuid,
-    scenario_count: u32,
-    concurrency: u32,
-    auto_optimize: bool,
-    opt_threshold: f64,
-    max_opt_iterations: u32,
-) {
+async fn run_evaluation_background(state: Arc<AppState>, p: EvalJobParams) {
+    let EvalJobParams {
+        run_id,
+        agent,
+        agent_id,
+        scenario_count,
+        concurrency,
+        auto_optimize,
+        opt_threshold,
+        max_opt_iterations,
+    } = p;
     let eval_repo = EvalRepo::new(state.db.clone());
     let scenario_repo = ScenarioRepo::new(state.db.clone());
     let trace_repo = TraceRepo::new(state.db.clone());
@@ -380,14 +406,16 @@ async fn run_evaluation_background(
         tracing::info!(%run_id, aggregate = scorecard.aggregate_score, %opt_threshold, "Score below threshold — starting iterative optimization");
         tokio::spawn(run_iterative_optimization(
             state.clone(),
-            run_id,
-            agent,
-            agent_id,
-            scorecard.clone(),
-            traces,
-            scenarios,
-            opt_threshold,
-            max_opt_iterations,
+            OptJobParams {
+                run_id,
+                initial_agent: agent,
+                agent_id,
+                initial_scorecard: scorecard.clone(),
+                passing_traces: traces,
+                scenarios,
+                threshold: opt_threshold,
+                max_iterations: max_opt_iterations,
+            },
         ));
     } else if auto_optimize {
         tracing::info!(%run_id, aggregate = scorecard.aggregate_score, "Score already meets threshold — skipping optimization");
@@ -409,24 +437,23 @@ async fn run_evaluation_background(
 ///   - No variant improves by > 1 pp  → `no_improvement`
 ///   - `round == max_iterations`  → `max_iterations`
 ///   - Any unrecoverable error  → `failed`
-async fn run_iterative_optimization(
-    state: Arc<AppState>,
-    run_id: Uuid,
-    initial_agent: agentforge_core::AgentFile,
-    agent_id: Uuid,
-    initial_scorecard: agentforge_core::Scorecard,
-    passing_traces: Vec<Trace>,
-    scenarios: Vec<agentforge_core::Scenario>,
-    threshold: f64,
-    max_iterations: u32,
-) {
+async fn run_iterative_optimization(state: Arc<AppState>, p: OptJobParams) {
+    let OptJobParams {
+        run_id,
+        initial_agent,
+        agent_id,
+        initial_scorecard,
+        passing_traces,
+        scenarios,
+        threshold,
+        max_iterations,
+    } = p;
     let eval_repo = EvalRepo::new(state.db.clone());
     let agent_repo = AgentRepo::new(state.db.clone());
     let optimizer = Optimizer::new(state.optimizer_config.clone());
 
     // Quick-eval uses up to 25 scenarios to balance speed vs accuracy.
-    let eval_scenarios: Vec<agentforge_core::Scenario> =
-        scenarios.into_iter().take(25).collect();
+    let eval_scenarios: Vec<agentforge_core::Scenario> = scenarios.into_iter().take(25).collect();
 
     let mut current_agent = initial_agent;
     let mut current_score = initial_scorecard.aggregate_score;
@@ -455,7 +482,13 @@ async fn run_iterative_optimization(
 
         // Mark the loop as running in the DB.
         let _ = eval_repo
-            .update_opt_tracking(run_id, "running", round as i32, Some(current_score), best_agent_id)
+            .update_opt_tracking(
+                run_id,
+                "running",
+                round as i32,
+                Some(current_score),
+                best_agent_id,
+            )
             .await;
 
         tracing::info!(%run_id, round, current_score, %threshold, "Optimization round starting");
@@ -529,7 +562,12 @@ async fn run_iterative_optimization(
 
         // Only accept if the improvement is > 1 percentage point.
         if round_best_score <= current_score + 0.01 {
-            tracing::info!(round, current_score, round_best_score, "No meaningful improvement this round");
+            tracing::info!(
+                round,
+                current_score,
+                round_best_score,
+                "No meaningful improvement this round"
+            );
             break "no_improvement";
         }
 
@@ -609,7 +647,13 @@ async fn run_iterative_optimization(
     };
 
     let _ = eval_repo
-        .update_opt_tracking(run_id, terminal_status, round as i32, Some(current_score), best_agent_id)
+        .update_opt_tracking(
+            run_id,
+            terminal_status,
+            round as i32,
+            Some(current_score),
+            best_agent_id,
+        )
         .await;
 
     tracing::info!(%run_id, terminal_status, round, final_score = current_score, "Optimization loop finished");
@@ -1758,7 +1802,13 @@ mod tests {
 
     #[test]
     fn opt_terminal_statuses_are_distinct() {
-        let statuses = ["converged", "no_improvement", "max_iterations", "failed", "running"];
+        let statuses = [
+            "converged",
+            "no_improvement",
+            "max_iterations",
+            "failed",
+            "running",
+        ];
         let unique: std::collections::HashSet<_> = statuses.iter().collect();
         assert_eq!(unique.len(), statuses.len());
     }
@@ -1813,7 +1863,10 @@ mod tests {
     fn score_below_threshold_continues() {
         let current_score = 0.94_f64;
         let threshold = 0.95_f64;
-        assert!(current_score < threshold, "Loop should continue when score is below threshold");
+        assert!(
+            current_score < threshold,
+            "Loop should continue when score is below threshold"
+        );
     }
 
     #[test]
@@ -1841,14 +1894,20 @@ mod tests {
     fn max_iterations_reached_condition() {
         let round: u32 = 5;
         let max_iterations: u32 = 5;
-        assert!(round >= max_iterations, "Loop must stop when round reaches max_iterations");
+        assert!(
+            round >= max_iterations,
+            "Loop must stop when round reaches max_iterations"
+        );
     }
 
     #[test]
     fn round_zero_does_not_exceed_max() {
         let round: u32 = 0;
         let max_iterations: u32 = 5;
-        assert!(round < max_iterations, "Round 0 must not exceed max_iterations 5");
+        assert!(
+            round < max_iterations,
+            "Round 0 must not exceed max_iterations 5"
+        );
     }
 
     // ── SSE progress event with opt fields ────────────────────────────────────
@@ -1897,7 +1956,10 @@ mod tests {
         let eval_done = true;
         let opt_running = false;
         let is_terminal = eval_done && !opt_running;
-        assert!(is_terminal, "SSE must terminate when eval is done and opt is not running");
+        assert!(
+            is_terminal,
+            "SSE must terminate when eval is done and opt is not running"
+        );
     }
 
     #[test]
@@ -1905,7 +1967,10 @@ mod tests {
         let eval_done = true;
         let opt_running = true;
         let is_terminal = eval_done && !opt_running;
-        assert!(!is_terminal, "SSE must keep polling while opt loop is still running");
+        assert!(
+            !is_terminal,
+            "SSE must keep polling while opt loop is still running"
+        );
     }
 
     #[test]
@@ -1913,7 +1978,10 @@ mod tests {
         let eval_done = false;
         let opt_running = false;
         let is_terminal = eval_done && !opt_running;
-        assert!(!is_terminal, "SSE must not terminate while eval is still running");
+        assert!(
+            !is_terminal,
+            "SSE must not terminate while eval is still running"
+        );
     }
 
     #[test]
