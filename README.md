@@ -166,7 +166,7 @@ agentforge/
 
 - Rust 1.83+ (install via [rustup](https://rustup.rs))
 - Docker + Docker Compose
-- OpenAI, Anthropic, or NVIDIA NIM API key
+- **One** of: OpenAI API key, Anthropic API key, NVIDIA NIM API key, or [Ollama](https://ollama.com) running locally (no key required)
 - Node.js 20+ and npm (only required if developing the `web/` dashboard locally; production deployment uses the pre-built Docker image)
 
 ### 1. Clone and start infrastructure
@@ -180,11 +180,48 @@ docker-compose up -d
 
 # Copy and configure environment
 cp .env.example .env
-# Edit .env — add at minimum one LLM API key:
-# OpenAI:   OPENAI_API_KEY=sk-...
-# Anthropic: ANTHROPIC_API_KEY=sk-ant-...
-# NVIDIA NIM (free tier): NVIDIA_API_KEY=nvapi-...
 ```
+
+Edit `.env` and add credentials for your chosen LLM provider:
+
+**OpenAI (default)**
+```bash
+OPENAI_API_KEY=sk-...
+AGENTFORGE_JUDGE_PROVIDER=openai
+AGENTFORGE_JUDGE_MODEL=gpt-4o
+```
+
+**Anthropic**
+```bash
+ANTHROPIC_API_KEY=sk-ant-...
+AGENTFORGE_JUDGE_PROVIDER=anthropic
+AGENTFORGE_JUDGE_MODEL=claude-3-5-haiku-20241022
+```
+
+**NVIDIA NIM** (free tier at [build.nvidia.com](https://build.nvidia.com) — no credit card for free models)
+```bash
+NVIDIA_API_KEY=nvapi-...
+AGENTFORGE_JUDGE_PROVIDER=nvidia
+AGENTFORGE_NVIDIA_MODEL=meta/llama-3.1-8b-instruct
+AGENTFORGE_JUDGE_MODEL=meta/llama-3.1-8b-instruct
+```
+
+**Ollama** (fully local, no API key needed)
+```bash
+# Install Ollama: https://ollama.com/download
+ollama serve
+ollama pull llama3.2:3b     # or any model you prefer
+
+# In .env:
+AGENTFORGE_JUDGE_PROVIDER=ollama
+AGENTFORGE_JUDGE_MODEL=llama3.2:3b
+AGENTFORGE_OLLAMA_MODEL=llama3.2:3b
+AGENTFORGE_OLLAMA_BASE_URL=http://localhost:11434/v1
+```
+
+> **Running inside Docker with Ollama on the host?** Set
+> `AGENTFORGE_OLLAMA_BASE_URL=http://host.docker.internal:11434/v1` so the
+> container can reach the Ollama process running on your machine.
 
 ### 2. Run database migrations
 
@@ -216,6 +253,86 @@ DATABASE_URL=$DATABASE_URL ./target/release/agentforge-api
 # Promote the winning version (pass the run-id returned by `agentforge run`)
 ./target/release/agentforge promote <run-id>
 ```
+
+---
+
+## LLM Providers
+
+AgentForge uses two independent LLM roles: the **agent** (the model being evaluated) and the **judge** (scores traces). Both are configured separately so you can mix providers — e.g., evaluate an Ollama agent with an OpenAI judge, or evaluate a NVIDIA NIM agent with an Anthropic judge. The API enforces that the two providers differ to prevent circular bias.
+
+Set `AGENTFORGE_JUDGE_PROVIDER` to route the judge (scorer + optimizer) to the correct backend. Set `provider` on a `POST /api/v1/runs` request (or `--provider` via CLI) to route the agent itself.
+
+### OpenAI
+
+```bash
+OPENAI_API_KEY=sk-...
+AGENTFORGE_JUDGE_PROVIDER=openai   # default
+AGENTFORGE_JUDGE_MODEL=gpt-4o      # default
+```
+
+The `AGENTFORGE_JUDGE_BASE_URL` variable overrides the base URL for any OpenAI-compatible endpoint (useful for Azure OpenAI, LM Studio, or other proxies):
+
+```bash
+AGENTFORGE_JUDGE_BASE_URL=https://myazure.openai.azure.com/openai/deployments/gpt-4o
+AGENTFORGE_JUDGE_API_KEY=<azure-key>
+```
+
+### Anthropic
+
+```bash
+ANTHROPIC_API_KEY=sk-ant-...
+AGENTFORGE_JUDGE_PROVIDER=anthropic
+AGENTFORGE_JUDGE_MODEL=claude-3-5-haiku-20241022
+```
+
+### NVIDIA NIM
+
+Sign up for a free API key at [build.nvidia.com](https://build.nvidia.com). Many models are available with no credits required.
+
+```bash
+NVIDIA_API_KEY=nvapi-...
+AGENTFORGE_JUDGE_PROVIDER=nvidia
+AGENTFORGE_NVIDIA_MODEL=meta/llama-3.1-8b-instruct   # model for agent runs
+AGENTFORGE_JUDGE_MODEL=meta/llama-3.1-8b-instruct    # model for judge/scorer
+```
+
+**Free-tier models** (no credits required):
+
+| Model ID | Notes |
+|----------|-------|
+| `meta/llama-3.1-8b-instruct` | Fast, good default for evals |
+| `meta/llama-3.1-70b-instruct` | Higher quality, slower |
+| `mistralai/mistral-7b-instruct-v0.3` | Compact, general purpose |
+| `mistralai/mistral-small-4-119b-2603` | Larger Mistral, default if `AGENTFORGE_NVIDIA_MODEL` unset |
+| `nvidia/nemotron-mini-4b-instruct` | NVIDIA-tuned, very fast |
+| `microsoft/phi-3-mini-4k-instruct` | Efficient small model |
+
+> NVIDIA NIM enforces single tool calls per request (`parallel_tool_calls=false`). The base URL is always `https://integrate.api.nvidia.com/v1` — it cannot be overridden.
+
+### Ollama (fully local)
+
+[Install Ollama](https://ollama.com/download), then pull a model and start the server:
+
+```bash
+ollama pull llama3.2:3b   # ~2 GB
+ollama serve              # starts on http://localhost:11434
+```
+
+Configure AgentForge to use it:
+
+```bash
+AGENTFORGE_JUDGE_PROVIDER=ollama
+AGENTFORGE_JUDGE_MODEL=llama3.2:3b
+AGENTFORGE_OLLAMA_MODEL=llama3.2:3b          # model used for agent runs
+AGENTFORGE_OLLAMA_BASE_URL=http://localhost:11434/v1
+```
+
+Ollama requires **no API key**. At runtime, any `model` field in an agent YAML file is transparently overridden with `AGENTFORGE_OLLAMA_MODEL`, so cloud-targeted agent files work without modification.
+
+> **Docker + Ollama on host:** replace `localhost` with `host.docker.internal`:
+> ```bash
+> AGENTFORGE_OLLAMA_BASE_URL=http://host.docker.internal:11434/v1
+> ```
 
 ---
 
@@ -275,7 +392,7 @@ name: "customer-support-agent"
 version: "2.1.0"
 
 model:
-  provider: openai          # openai | anthropic | ollama | bedrock
+  provider: openai          # openai | anthropic | nvidia_nim | ollama | bedrock
   model_id: gpt-4o
   temperature: 0.2
   max_tokens: 2048
@@ -344,7 +461,7 @@ Options for `run`:
   --concurrency <N>            Parallel workers (default: 10)
   --seed <N>                   Random seed for reproducibility (default: 42)
   --provider <NAME>            Agent LLM provider: openai | anthropic | nvidia | ollama | bedrock (default: openai)
-                               (ollama and bedrock require a self-hosted runner with local infrastructure)
+                               (ollama requires `ollama serve` running locally; bedrock requires AWS credentials and a self-hosted runner)
   --judge-provider <NAME>      Judge LLM provider (must differ from --provider; default: anthropic)
   --threshold <F>              Pass threshold 0.0–1.0 (default: 0.85)
   --output-json <FILE>         Write full scorecard JSON to FILE (used by the GitHub Action)
@@ -508,15 +625,18 @@ All configuration is via environment variables. See [`.env.example`](.env.exampl
 | `OPENAI_API_KEY` | — | OpenAI API key |
 | `ANTHROPIC_API_KEY` | — | Anthropic API key |
 | `NVIDIA_API_KEY` | — | NVIDIA NIM API key (`nvapi-…`) |
-| `AGENTFORGE_NVIDIA_MODEL` | `mistralai/mistral-small-4-119b-2603` | NVIDIA NIM model to use for the agent |
-| `AGENTFORGE_JUDGE_BASE_URL` | _(provider default)_ | Override the judge LLM base URL (useful for OpenAI-compatible endpoints) |
+| `AGENTFORGE_NVIDIA_MODEL` | `mistralai/mistral-small-4-119b-2603` | NVIDIA NIM model for agent runs (base URL is always `https://integrate.api.nvidia.com/v1`) |
+| `AGENTFORGE_OLLAMA_BASE_URL` | `http://localhost:11434/v1` | Ollama base URL (OpenAI-compatible endpoint) |
+| `AGENTFORGE_OLLAMA_MODEL` | `llama3.2:3b` | Ollama model; overrides any model ID in the agent file at runtime |
+| `AGENTFORGE_JUDGE_PROVIDER` | `openai` | LLM provider for the judge: `openai` \| `anthropic` \| `nvidia` \| `ollama` |
+| `AGENTFORGE_JUDGE_MODEL` | `gpt-4o` | Judge model ID |
+| `AGENTFORGE_JUDGE_BASE_URL` | _(provider default)_ | Override the judge base URL (e.g., Azure OpenAI or OpenAI-compatible proxy) |
+| `AGENTFORGE_JUDGE_API_KEY` | _(provider default)_ | Override the judge API key (useful when `AGENTFORGE_JUDGE_BASE_URL` points to a different endpoint) |
 | `AGENTFORGE_HOST` | `127.0.0.1` | API server bind address |
 | `AGENTFORGE_PORT` | `8080` | API server port |
 | `AGENTFORGE_LOG_LEVEL` | `info` | Log level (trace/debug/info/warn/error) |
 | `AGENTFORGE_MAX_CONCURRENT_RUNS` | `10` | Max simultaneous background eval runs (HTTP 429 when exceeded) |
 | `AGENTFORGE_API_KEY` | — | Bearer token for API authentication. When set, all `/api/v1/*` endpoints require `Authorization: Bearer <key>`. Unset = unauthenticated dev mode |
-| `AGENTFORGE_JUDGE_PROVIDER` | `openai` | LLM provider for the judge |
-| `AGENTFORGE_JUDGE_MODEL` | `gpt-4o` | Judge model ID |
 | `AGENTFORGE_DEFAULT_SCENARIOS` | `100` | Default scenario count per run |
 | `AGENTFORGE_MAX_SCENARIOS` | `2000` | Maximum scenarios allowed per run (HTTP 400 when exceeded) |
 | `AGENTFORGE_DEFAULT_CONCURRENCY` | `10` | Parallel worker count |
@@ -530,8 +650,6 @@ All configuration is via environment variables. See [`.env.example`](.env.exampl
 | `AGENTFORGE_WEIGHT_SCHEMA` | `0.15` | Schema-compliance scoring weight |
 | `AGENTFORGE_WEIGHT_INSTR` | `0.07` | Instruction-adherence scoring weight |
 | `AGENTFORGE_WEIGHT_PATH` | `0.03` | Path-efficiency scoring weight |
-| `AGENTFORGE_OLLAMA_BASE_URL` | `http://localhost:11434/v1` | Base URL for Ollama (OpenAI-compatible API) |
-| `AGENTFORGE_NVIDIA_BASE_URL` | `https://integrate.api.nvidia.com/v1` | Base URL for NVIDIA NIM |
 
 > **`REDIS_URL` vs `AGENTFORGE_*`:** Redis uses the bare `REDIS_URL` key (compatible with most hosting platforms). All other app-level settings use the `AGENTFORGE_` prefix.
 
