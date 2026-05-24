@@ -7,8 +7,9 @@ WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
 COPY src/ src/
 COPY crates/ crates/
-# Copy SQLx offline cache so builds work without a live DB
-COPY .sqlx/ .sqlx/
+# Copy SQLx offline cache so builds work without a live DB.
+# Query files live under each crate's own .sqlx/ directory.
+COPY crates/agentforge-db/.sqlx/ crates/agentforge-db/.sqlx/
 
 # Build both the API server and CLI
 RUN SQLX_OFFLINE=true cargo build --release --package agentforge-api --package agentforge-cli
