@@ -5,8 +5,11 @@ export interface CreateAgentRequest {
   content: string
 }
 
-export const fetchAgents = (limit = 50, offset = 0) =>
+export const fetchAgents = (limit = 200, offset = 0) =>
   apiFetch<AgentResponse[]>(`/agents?limit=${limit}&offset=${offset}`)
+
+export const fetchAgentVersionsByName = (name: string) =>
+  apiFetch<AgentResponse[]>(`/agents?name=${encodeURIComponent(name)}`)
 
 export const fetchAgent = (id: string) =>
   apiFetch<AgentResponse>(`/agents/${id}`)

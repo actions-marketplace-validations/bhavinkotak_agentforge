@@ -57,6 +57,7 @@ impl From<AgentVersion> for AgentResponse {
 pub struct ListAgentsQuery {
     pub limit: Option<i64>,
     pub offset: Option<i64>,
+    pub name: Option<String>,
 }
 
 /// POST /agents
@@ -123,12 +124,17 @@ pub async fn list_agents(
     Query(params): Query<ListAgentsQuery>,
 ) -> ApiResult<Json<Vec<AgentResponse>>> {
     let repo = AgentRepo::new(state.db.clone());
-    let limit = params.limit.unwrap_or(50).min(200);
-    let offset = params.offset.unwrap_or(0);
-    let agents = repo
-        .list_all(limit, offset)
-        .await
-        .map_err(|e| ApiError::internal(e.to_string()))?;
+    let agents = if let Some(name) = params.name {
+        repo.list_by_name(&name)
+            .await
+            .map_err(|e| ApiError::internal(e.to_string()))?
+    } else {
+        let limit = params.limit.unwrap_or(50).min(200);
+        let offset = params.offset.unwrap_or(0);
+        repo.list_all(limit, offset)
+            .await
+            .map_err(|e| ApiError::internal(e.to_string()))?
+    };
     Ok(Json(agents.into_iter().map(Into::into).collect()))
 }
 

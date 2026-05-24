@@ -1,8 +1,8 @@
 import { useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useQuery, useMutation } from '@tanstack/react-query'
-import { Play, GitCompare, Cpu, FileDown, Copy } from 'lucide-react'
-import { fetchAgent } from '@/api/agents'
+import { Play, GitCompare, Cpu, FileDown, Copy, History } from 'lucide-react'
+import { fetchAgent, fetchAgentVersionsByName } from '@/api/agents'
 import { startRun, fetchRunsForAgent } from '@/api/runs'
 import { startShadowRun } from '@/api/shadow'
 import { startBenchmark } from '@/api/benchmarks'
@@ -269,6 +269,21 @@ export function AgentDetailPage() {
         </Card>
       )}
 
+      {/* Version History */}
+      {agentQ.data && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <History className="h-4 w-4" />
+              Version History
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <VersionHistoryPanel currentId={id!} agentName={agentQ.data.name} />
+          </CardContent>
+        </Card>
+      )}
+
       {/* Score history */}
       <Card>
         <CardHeader><CardTitle>Score History</CardTitle></CardHeader>
@@ -276,6 +291,78 @@ export function AgentDetailPage() {
           <ScoreHistoryPanel agentId={id!} onRunClick={rid => navigate(`/runs/${rid}`)} />
         </CardContent>
       </Card>
+    </div>
+  )
+}
+
+function VersionHistoryPanel({ currentId, agentName }: { currentId: string; agentName: string }) {
+  const navigate = useNavigate()
+  const versionsQ = useQuery({
+    queryKey: ['agent-versions', agentName],
+    queryFn: () => fetchAgentVersionsByName(agentName),
+    enabled: !!agentName,
+  })
+
+  const versions = (versionsQ.data ?? []).slice().sort((a, b) => {
+    // Sort by semver ascending (oldest first), then by created_at as tiebreaker
+    const semverCmp = a.version.localeCompare(b.version, undefined, { numeric: true, sensitivity: 'base' })
+    if (semverCmp !== 0) return semverCmp
+    return new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+  })
+
+  if (versionsQ.isLoading) return <p className="text-xs text-gray-400 py-2">Loading versions…</p>
+  if (versions.length === 0) return <p className="text-xs text-gray-400 py-2">No versions found.</p>
+
+  return (
+    <div className="overflow-hidden rounded-md border border-gray-100">
+      <table className="w-full text-xs">
+        <thead>
+          <tr className="border-b border-gray-100 bg-gray-50 text-left text-gray-500">
+            <th className="px-3 py-2">#</th>
+            <th className="px-3 py-2">Version</th>
+            <th className="px-3 py-2">SHA</th>
+            <th className="px-3 py-2">Status</th>
+            <th className="px-3 py-2">Created</th>
+            <th className="px-3 py-2"></th>
+          </tr>
+        </thead>
+        <tbody>
+          {versions.map((v, i) => {
+            const isCurrent = v.id === currentId
+            return (
+              <tr
+                key={v.id}
+                onClick={() => navigate(`/agents/${v.id}`)}
+                className={`cursor-pointer border-b border-gray-50 hover:bg-blue-50 transition-colors ${isCurrent ? 'bg-indigo-50' : ''}`}
+              >
+                <td className="px-3 py-2 text-gray-400">{i + 1}</td>
+                <td className="px-3 py-2 font-medium text-gray-800">
+                  v{v.version}
+                  {isCurrent && (
+                    <span className="ml-2 rounded bg-indigo-100 px-1.5 py-0.5 text-indigo-700 text-[10px] font-semibold">
+                      current
+                    </span>
+                  )}
+                </td>
+                <td className="px-3 py-2 font-mono text-gray-400">{truncate(v.sha, 10)}</td>
+                <td className="px-3 py-2">
+                  {v.is_champion && <RunStatusBadge status="champion" />}
+                </td>
+                <td className="px-3 py-2 text-gray-500">{fmtDate(v.created_at)}</td>
+                <td className="px-3 py-2" onClick={(e) => e.stopPropagation()}>
+                  <button
+                    title="Diff against this version"
+                    onClick={() => navigate(`/diff?v1=${v.id}`)}
+                    className="text-gray-400 hover:text-blue-600"
+                  >
+                    <GitCompare className="h-3.5 w-3.5" />
+                  </button>
+                </td>
+              </tr>
+            )
+          })}
+        </tbody>
+      </table>
     </div>
   )
 }
