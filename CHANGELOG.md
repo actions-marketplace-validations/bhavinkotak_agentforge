@@ -1,5 +1,50 @@
 # Changelog
 
+## [0.1.8](https://github.com/bhavinkotak/agentforge/compare/agentforge-v0.1.7...agentforge-v0.1.8) (2026-05-24)
+
+
+### Features
+
+* add auto-optimize toggle to eval run form ([7f595ea](https://github.com/bhavinkotak/agentforge/commit/7f595ea69d001dc28675650e68264e52685c4b6a))
+* add OllamaClient, configure Ollama as default provider, fix duplicate SHA in opt loop ([f647edb](https://github.com/bhavinkotak/agentforge/commit/f647edb2288ae48f9f3e2fc767fff3d47c752c4a))
+* API key auth, PATCH/scenarios endpoints, README + action.yml overhaul ([87c4aab](https://github.com/bhavinkotak/agentforge/commit/87c4aabefe3756fbf83e80bd5569ab72f13d0166))
+* diff tab dropdowns, run→agent links, parent_sha, fmt fix, 100 unit tests ([c684409](https://github.com/bhavinkotak/agentforge/commit/c684409316932089dc420fa3b2e7efcbeaca0f0d))
+* **diff:** implement real line-by-line unified diff for system prompt comparison ([7632ce6](https://github.com/bhavinkotak/agentforge/commit/7632ce6aac0eeaa3bc489ba938400db35bae570a))
+* **diff:** show 'no content differences' message when versions are identical ([b9c8cfc](https://github.com/bhavinkotak/agentforge/commit/b9c8cfc74c04b8a2a87e5a62d5be630dc580a389))
+* generate realistic, domain-aware test scenarios instead of vague placeholders ([69edce4](https://github.com/bhavinkotak/agentforge/commit/69edce4f0c1954cacdff3d2ad79101da64f6a3ce))
+* iterative self-improvement loop with 95% threshold ([36c13b3](https://github.com/bhavinkotak/agentforge/commit/36c13b34e238e97f3aa58eac9ee610493593fe67))
+* self-improving optimizer loop + 200+ regression tests ([b717fb3](https://github.com/bhavinkotak/agentforge/commit/b717fb32fd73bfd50ebde763a321d1efb5d0a10f))
+* SSE progress endpoint, --watch mode, README stale version fixes ([9f8b814](https://github.com/bhavinkotak/agentforge/commit/9f8b814e25538eb90298adcd791da19c686bc9ea))
+* **ui:** group agents by name on list page; add version history panel ([a57ab73](https://github.com/bhavinkotak/agentforge/commit/a57ab73778ee01ccd7e2992604240a8f07325b0d))
+
+
+### Bug Fixes
+
+* add api_error to DB enum, 60s timeout for scenario gen, improve error banner ([ca2910e](https://github.com/bhavinkotak/agentforge/commit/ca2910ee0accf1f76bc2a05d9e8e26ae50a744a1))
+* api_error cluster for errored traces, clippy fixes, README/gitignore updates ([f7832ce](https://github.com/bhavinkotak/agentforge/commit/f7832cefd3f990b5b60160950db28b4c8a7c0bed))
+* **ci:** refactor too_many_args to structs, fix deny.toml v2, update README ([f69a6dd](https://github.com/bhavinkotak/agentforge/commit/f69a6dd95e0bd2c0a61ce30eb4556a805181dd4b))
+* cluster ordering bug, missing aggregate_score in list API, schema regression tests ([5a9da2e](https://github.com/bhavinkotak/agentforge/commit/5a9da2e919a70aa62a8f1ccc90268f3ee27473e3))
+* correct NVIDIA error provider labels, surface trace failure_reason in UI ([cbe5df5](https://github.com/bhavinkotak/agentforge/commit/cbe5df5c1bf8055d950e6941e625e6ad60be03ba))
+* **diff:** correct LCS edit-list traversal direction ([6ffe055](https://github.com/bhavinkotak/agentforge/commit/6ffe0558299b382f2e7cce8d3905a430d48de700))
+* disable parallel_tool_calls for NVIDIA provider (single tool call only) ([5feca15](https://github.com/bhavinkotak/agentforge/commit/5feca1597fe90f7707e0b2ffdb65dfa273dd6e36))
+* make optimizer produce real LLM-rewritten agent variants ([9bbdc1e](https://github.com/bhavinkotak/agentforge/commit/9bbdc1e604e30e294eb03e3e1491202742ef185b))
+* **optimizer:** bump version on reorder_instructions, expose bump_patch_version_pub, add changelog to AgentResponse ([4f6e823](https://github.com/bhavinkotak/agentforge/commit/4f6e823c01d6d2470930db03ae19ca616e6de389))
+* **optimizer:** rewrite tool description mutation to use compact description-only format ([33b37be](https://github.com/bhavinkotak/agentforge/commit/33b37be27e3543e71de408b5f8c6d3e6ee4432a9))
+* pass actual run_id to RunnerConfig and derive scorer credentials from provider ([d946cbb](https://github.com/bhavinkotak/agentforge/commit/d946cbbcd1049627944765c9a2d8ac6c91abe80a))
+* proper tool schemas + llama-3.1-70b for reliable function calling ([7f6b343](https://github.com/bhavinkotak/agentforge/commit/7f6b34395c0d442a53644aa7fdbdb31478aa169b))
+* realistic mock tool responses for GitHub Actions tools ([e6d1ab7](https://github.com/bhavinkotak/agentforge/commit/e6d1ab7226784323b4b2e75eda029bf71c29893b))
+* remove invalid ignoreDeprecations 6.0 from tsconfig (TS 5.9 compat) ([aa535c3](https://github.com/bhavinkotak/agentforge/commit/aa535c399eb2da6546eab70862fcb716508f149e))
+* rustfmt formatting + move sqlx cache to crate-level .sqlx/ ([95fd249](https://github.com/bhavinkotak/agentforge/commit/95fd249740767904e1fae901a431573d7d585914))
+* smarter failure cluster classification using weakest-dimension fallback ([34b3723](https://github.com/bhavinkotak/agentforge/commit/34b3723d6056f676a7ba72369936b61a03343fb6))
+* suppress spurious postgres errors in CI test runs ([51d1f27](https://github.com/bhavinkotak/agentforge/commit/51d1f274652222d9cf3ed8bcf8676299506936b8))
+* **tests:** update InstructionReorder test assertions to match 'Key Behavioral Rules' prefix ([e036ddf](https://github.com/bhavinkotak/agentforge/commit/e036ddf1fa2907f6e509f0b42148915732ca7250))
+* vite proxy must rewrite /api/* to /api/v1/* not strip the prefix ([4f92a05](https://github.com/bhavinkotak/agentforge/commit/4f92a0519529da8b002c18e9ee49de2190d4887e))
+
+
+### Documentation
+
+* add Ollama and NVIDIA NIM setup docs, fix config table ([295697a](https://github.com/bhavinkotak/agentforge/commit/295697afcaf78e8043eae78100fc664562277762))
+
 ## [0.1.7](https://github.com/bhavinkotak/agentforge/compare/agentforge-v0.1.6...agentforge-v0.1.7) (2026-05-20)
 
 
