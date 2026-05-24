@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.9](https://github.com/bhavinkotak/agentforge/compare/agentforge-v0.1.8...agentforge-v0.1.9) (2026-05-24)
+
+
+### Bug Fixes
+
+* **ci:** fix Docker .sqlx path and aarch64 musl cross-compilation ([14d77f6](https://github.com/bhavinkotak/agentforge/commit/14d77f6442051aa462b8e2dcc5557dab71addf54))
+
 ## [0.1.8](https://github.com/bhavinkotak/agentforge/compare/agentforge-v0.1.7...agentforge-v0.1.8) (2026-05-24)
 
 
