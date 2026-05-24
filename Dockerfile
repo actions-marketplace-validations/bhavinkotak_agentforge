@@ -7,6 +7,7 @@ WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
 COPY src/ src/
 COPY crates/ crates/
+COPY migrations/ migrations/
 # Copy SQLx offline cache so builds work without a live DB.
 # Query files live under each crate's own .sqlx/ directory.
 COPY crates/agentforge-db/.sqlx/ crates/agentforge-db/.sqlx/
