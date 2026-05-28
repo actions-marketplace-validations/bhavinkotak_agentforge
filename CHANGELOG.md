@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.1.10](https://github.com/bhavinkotak/agentforge/compare/agentforge-v0.1.9...agentforge-v0.1.10) (2026-05-27)
+
+
+### Features
+
+* add AWS Bedrock provider with Converse API and SigV4 request signing ([c435a4e](https://github.com/bhavinkotak/agentforge/commit/c435a4e))
+* fix CLI provider routing for ollama and bedrock arms ([c435a4e](https://github.com/bhavinkotak/agentforge/commit/c435a4e))
+* add 15 integration tests for shadow-runs, finetune-export, benchmarks, and agent-runs routes ([c435a4e](https://github.com/bhavinkotak/agentforge/commit/c435a4e))
+* update README with Bedrock provider docs, new API endpoints, Multi-Agent Testing, and Benchmark Suites sections ([c435a4e](https://github.com/bhavinkotak/agentforge/commit/c435a4e))
+
 ## [0.1.9](https://github.com/bhavinkotak/agentforge/compare/agentforge-v0.1.8...agentforge-v0.1.9) (2026-05-24)
 
 
