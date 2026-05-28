@@ -10,7 +10,10 @@ use agentforge_db::{
 };
 use agentforge_gatekeeper::{GateStatus, Gatekeeper, GatekeeperConfig};
 use agentforge_parser::{parse_agent_file, to_agent_version, validate_agent_file};
-use agentforge_runner::{AgentRunner, AnthropicClient, NvidiaClient, OpenAiClient, RunnerConfig};
+use agentforge_runner::{
+    AgentRunner, AnthropicClient, BedrockClient, NvidiaClient, OllamaClient, OpenAiClient,
+    RunnerConfig,
+};
 use agentforge_scenarios::{generate_scenarios, ScenarioGeneratorConfig};
 use agentforge_scorer::{score_run, ScorerConfig};
 
@@ -998,6 +1001,16 @@ fn build_llm_client(provider: &str) -> Result<std::sync::Arc<dyn agentforge_runn
                 .ok_or_else(|| anyhow::anyhow!("NVIDIA_API_KEY must be set"))?,
         )
             as std::sync::Arc<dyn agentforge_runner::LlmClient>),
+        "ollama" => Ok(std::sync::Arc::new(OllamaClient::from_env())
+            as std::sync::Arc<dyn agentforge_runner::LlmClient>),
+        "bedrock" => Ok(
+            std::sync::Arc::new(BedrockClient::from_env().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY must be set for Bedrock \
+                     (or use an instance role with bedrock:InvokeModel permission)"
+                )
+            })?) as std::sync::Arc<dyn agentforge_runner::LlmClient>,
+        ),
         _ => Ok(std::sync::Arc::new(
             OpenAiClient::from_env()
                 .ok_or_else(|| anyhow::anyhow!("OPENAI_API_KEY must be set"))?,

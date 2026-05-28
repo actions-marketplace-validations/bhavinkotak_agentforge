@@ -947,3 +947,280 @@ async fn github_actions_expert_full_pipeline_with_mocked_llm() {
         "No traces should be in Error state when LLM always responds"
     );
 }
+
+// ─── New route smoke tests: shadow-runs, finetune exports, benchmarks ────────
+//
+// These tests verify that:
+//   1. Each new route is properly registered (not 404 / 405).
+//   2. The JSON extractor validates required fields (missing body → 422).
+//   3. Auth middleware is applied to the new routes (missing token → 401).
+//
+// DB connectivity is NOT required: tests that send a well-formed request body
+// will hit a connection error in the handler and receive 500, which is still
+// proof that the route exists and that the request passed JSON deserialization.
+
+// ── /api/v1/shadow-runs ───────────────────────────────────────────────────
+
+/// POST with a complete body routes to the handler (not 404 / 405).
+/// Without a DB connection the handler returns 500, which is fine.
+#[tokio::test]
+async fn shadow_run_post_route_is_registered() {
+    use axum::{body::Body, http::Request, http::StatusCode};
+    use tower::ServiceExt;
+
+    let app = make_test_router(None);
+    let body = serde_json::json!({
+        "champion_agent_id": Uuid::new_v4(),
+        "candidate_agent_id": Uuid::new_v4(),
+        "traffic_percent": 10
+    })
+    .to_string();
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/v1/shadow-runs")
+        .header("Content-Type", "application/json")
+        .body(Body::from(body))
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_ne!(
+        resp.status(),
+        StatusCode::NOT_FOUND,
+        "POST /shadow-runs must be registered"
+    );
+    assert_ne!(resp.status(), StatusCode::METHOD_NOT_ALLOWED);
+}
+
+/// POST with an empty JSON body returns 422 (missing required fields).
+#[tokio::test]
+async fn shadow_run_post_missing_fields_returns_422() {
+    use axum::{body::Body, http::Request, http::StatusCode};
+    use tower::ServiceExt;
+
+    let app = make_test_router(None);
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/v1/shadow-runs")
+        .header("Content-Type", "application/json")
+        .body(Body::from("{}"))
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "Missing required fields must return 422"
+    );
+}
+
+/// GET route is registered.
+#[tokio::test]
+async fn shadow_run_get_route_is_registered() {
+    use axum::{body::Body, http::Request, http::StatusCode};
+    use tower::ServiceExt;
+
+    let app = make_test_router(None);
+    let id = Uuid::new_v4();
+    let req = Request::builder()
+        .method("GET")
+        .uri(format!("/api/v1/shadow-runs/{id}"))
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_ne!(
+        resp.status(),
+        StatusCode::NOT_FOUND,
+        "GET /shadow-runs/:id must be registered"
+    );
+    assert_ne!(resp.status(), StatusCode::METHOD_NOT_ALLOWED);
+}
+
+/// Auth middleware is applied: missing Bearer token → 401.
+#[tokio::test]
+async fn shadow_run_post_requires_auth_when_key_is_set() {
+    use axum::{body::Body, http::Request, http::StatusCode};
+    use tower::ServiceExt;
+
+    let app = make_test_router(Some("s3cr3t".to_string()));
+    let body = serde_json::json!({
+        "champion_agent_id": Uuid::new_v4(),
+        "candidate_agent_id": Uuid::new_v4()
+    })
+    .to_string();
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/v1/shadow-runs")
+        .header("Content-Type", "application/json")
+        .body(Body::from(body))
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+}
+
+// ── /api/v1/exports/finetune ──────────────────────────────────────────────
+
+/// POST route is registered.
+#[tokio::test]
+async fn finetune_export_post_route_is_registered() {
+    use axum::{body::Body, http::Request, http::StatusCode};
+    use tower::ServiceExt;
+
+    let app = make_test_router(None);
+    let body = serde_json::json!({"run_id": Uuid::new_v4(), "format": "openai"}).to_string();
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/v1/exports/finetune")
+        .header("Content-Type", "application/json")
+        .body(Body::from(body))
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_ne!(resp.status(), StatusCode::NOT_FOUND);
+    assert_ne!(resp.status(), StatusCode::METHOD_NOT_ALLOWED);
+}
+
+/// POST missing required `run_id` → 422.
+#[tokio::test]
+async fn finetune_export_post_missing_run_id_returns_422() {
+    use axum::{body::Body, http::Request, http::StatusCode};
+    use tower::ServiceExt;
+
+    let app = make_test_router(None);
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/v1/exports/finetune")
+        .header("Content-Type", "application/json")
+        .body(Body::from("{}"))
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+}
+
+/// GET route is registered.
+#[tokio::test]
+async fn finetune_export_get_route_is_registered() {
+    use axum::{body::Body, http::Request, http::StatusCode};
+    use tower::ServiceExt;
+
+    let app = make_test_router(None);
+    let id = Uuid::new_v4();
+    let req = Request::builder()
+        .method("GET")
+        .uri(format!("/api/v1/exports/finetune/{id}"))
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_ne!(resp.status(), StatusCode::NOT_FOUND);
+    assert_ne!(resp.status(), StatusCode::METHOD_NOT_ALLOWED);
+}
+
+/// Auth is enforced on the finetune export route.
+#[tokio::test]
+async fn finetune_export_post_requires_auth_when_key_is_set() {
+    use axum::{body::Body, http::Request, http::StatusCode};
+    use tower::ServiceExt;
+
+    let app = make_test_router(Some("key".to_string()));
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/v1/exports/finetune")
+        .header("Content-Type", "application/json")
+        .body(Body::from("{}"))
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+}
+
+// ── /api/v1/benchmarks ───────────────────────────────────────────────────
+
+/// POST route is registered.
+#[tokio::test]
+async fn benchmark_post_route_is_registered() {
+    use axum::{body::Body, http::Request, http::StatusCode};
+    use tower::ServiceExt;
+
+    let app = make_test_router(None);
+    let body = serde_json::json!({"agent_id": Uuid::new_v4(), "suite": "gaia"}).to_string();
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/v1/benchmarks")
+        .header("Content-Type", "application/json")
+        .body(Body::from(body))
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_ne!(resp.status(), StatusCode::NOT_FOUND);
+    assert_ne!(resp.status(), StatusCode::METHOD_NOT_ALLOWED);
+}
+
+/// POST missing required `agent_id` and `suite` → 422.
+#[tokio::test]
+async fn benchmark_post_missing_fields_returns_422() {
+    use axum::{body::Body, http::Request, http::StatusCode};
+    use tower::ServiceExt;
+
+    let app = make_test_router(None);
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/v1/benchmarks")
+        .header("Content-Type", "application/json")
+        .body(Body::from("{}"))
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+}
+
+/// GET route is registered.
+#[tokio::test]
+async fn benchmark_get_route_is_registered() {
+    use axum::{body::Body, http::Request, http::StatusCode};
+    use tower::ServiceExt;
+
+    let app = make_test_router(None);
+    let id = Uuid::new_v4();
+    let req = Request::builder()
+        .method("GET")
+        .uri(format!("/api/v1/benchmarks/{id}"))
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_ne!(resp.status(), StatusCode::NOT_FOUND);
+    assert_ne!(resp.status(), StatusCode::METHOD_NOT_ALLOWED);
+}
+
+/// Auth is enforced on the benchmarks route.
+#[tokio::test]
+async fn benchmark_post_requires_auth_when_key_is_set() {
+    use axum::{body::Body, http::Request, http::StatusCode};
+    use tower::ServiceExt;
+
+    let app = make_test_router(Some("key".to_string()));
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/v1/benchmarks")
+        .header("Content-Type", "application/json")
+        .body(Body::from("{}"))
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+}
+
+// ── /api/v1/agents/:id/runs ───────────────────────────────────────────────
+
+/// GET /agents/:id/runs is registered and does not return 404 / 405.
+#[tokio::test]
+async fn agent_runs_list_route_is_registered() {
+    use axum::{body::Body, http::Request, http::StatusCode};
+    use tower::ServiceExt;
+
+    let app = make_test_router(None);
+    let id = Uuid::new_v4();
+    let req = Request::builder()
+        .method("GET")
+        .uri(format!("/api/v1/agents/{id}/runs"))
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_ne!(
+        resp.status(),
+        StatusCode::NOT_FOUND,
+        "GET /agents/:id/runs must be registered"
+    );
+    assert_ne!(resp.status(), StatusCode::METHOD_NOT_ALLOWED);
+}

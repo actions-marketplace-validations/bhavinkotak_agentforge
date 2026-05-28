@@ -3,8 +3,8 @@ pub mod runner;
 pub mod worker;
 
 pub use llm::{
-    AnthropicClient, LlmClient, LlmMessage, LlmRequest, LlmResponse, LlmRole, NvidiaClient,
-    OllamaClient, OpenAiClient, ToolCall,
+    AnthropicClient, BedrockClient, LlmClient, LlmMessage, LlmRequest, LlmResponse, LlmRole,
+    NvidiaClient, OllamaClient, OpenAiClient, ToolCall,
 };
 pub use runner::{AgentRunner, RunResult, RunnerConfig};
 

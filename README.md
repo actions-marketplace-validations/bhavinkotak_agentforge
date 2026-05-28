@@ -17,11 +17,14 @@ AgentForge is a self-improving AI agent optimization platform written in Rust. F
 - [Architecture](#architecture)
 - [Project Structure](#project-structure)
 - [Quick Start](#quick-start)
+- [LLM Providers](#llm-providers)
 - [Agent File Format](#agent-file-format)
 - [CLI Usage](#cli-usage)
 - [REST API](#rest-api)
 - [Scoring Dimensions](#scoring-dimensions)
 - [Promotion Gatekeeper](#promotion-gatekeeper)
+- [Multi-Agent Testing](#multi-agent-testing)
+- [Benchmark Suites](#benchmark-suites)
 - [Configuration](#configuration)
 - [Running Tests](#running-tests)
 - [GitHub Actions Marketplace](#github-actions-marketplace)
@@ -135,7 +138,9 @@ agentforge/
 │   ├── 005_shadow_runs.sql
 │   ├── 006_finetune_exports.sql
 │   ├── 007_benchmarks.sql
-│   └── 008_trace_cost.sql
+│   ├── 008_trace_cost.sql
+│   ├── 009_failure_cluster_api_error.sql
+│   └── 010_opt_tracking.sql
 ├── fixtures/
 │   ├── customer-support-agent.yaml     # Native YAML example
 │   └── agentforge-evaluator.agent.md   # Copilot .agent.md example
@@ -334,6 +339,54 @@ Ollama requires **no API key**. At runtime, any `model` field in an agent YAML f
 > AGENTFORGE_OLLAMA_BASE_URL=http://host.docker.internal:11434/v1
 > ```
 
+### AWS Bedrock
+
+[AWS Bedrock](https://aws.amazon.com/bedrock/) provides managed access to foundation models from Anthropic, Meta, Mistral, and others. Because Bedrock uses SigV4 request signing rather than API keys, it requires a self-hosted runner (GitHub-hosted runners do not have AWS credentials).
+
+**Prerequisites:**
+- An AWS account with Bedrock access enabled for the model you want to use.
+- IAM credentials with the `bedrock:InvokeModel` permission.
+- A self-hosted GitHub Actions runner (or local/cloud VM) with AWS credentials available via environment variables or an instance role.
+
+**CLI**
+
+```bash
+AWS_ACCESS_KEY_ID=AKIA...
+AWS_SECRET_ACCESS_KEY=...
+AWS_REGION=us-east-1
+
+./target/release/agentforge run \
+  --agent fixtures/customer-support-agent.yaml \
+  --provider bedrock \
+  --judge-provider openai    # judge must be a different provider
+```
+
+**Environment variables**
+
+```bash
+# AWS credentials (can also be supplied via instance role / IRSA — no env vars needed in that case)
+AWS_ACCESS_KEY_ID=AKIA...
+AWS_SECRET_ACCESS_KEY=...
+AWS_SESSION_TOKEN=...        # only required for temporary credentials
+AWS_REGION=us-east-1
+
+# Bedrock model for agent runs (defaults to anthropic.claude-3-haiku-20240307-v1:0)
+AGENTFORGE_BEDROCK_MODEL=anthropic.claude-3-5-sonnet-20241022-v2:0
+```
+
+**Supported Bedrock model IDs**
+
+| Model | ID |
+|-------|----|
+| Claude 3.5 Sonnet v2 | `anthropic.claude-3-5-sonnet-20241022-v2:0` |
+| Claude 3.5 Haiku | `anthropic.claude-3-5-haiku-20241022-v1:0` |
+| Claude 3 Haiku | `anthropic.claude-3-haiku-20240307-v1:0` |
+| Llama 3.1 8B Instruct | `meta.llama3-1-8b-instruct-v1:0` |
+| Llama 3.1 70B Instruct | `meta.llama3-1-70b-instruct-v1:0` |
+| Mistral 7B Instruct | `mistral.mistral-7b-instruct-v0:2` |
+
+> The Bedrock base URL (`https://bedrock-runtime.<region>.amazonaws.com`) is derived automatically from `AWS_REGION`. It cannot be overridden. Cross-region inference profiles are supported by setting `AWS_REGION` to the inference profile region.
+
 ---
 
 ## Agent File Format
@@ -503,6 +556,7 @@ An **OpenAPI 3.1 spec** is available at [docs/openapi.yaml](docs/openapi.yaml) a
 | `PATCH` | `/api/v1/agents/:id` | Update agent metadata (`is_champion`, `changelog`) |
 | `DELETE` | `/api/v1/agents/:id` | Delete an agent version (blocked if it is the current champion) |
 | `GET` | `/api/v1/agents/:id/scenarios` | List generated test scenarios for an agent version (paginated: `?limit=50`, max 500) |
+| `GET` | `/api/v1/agents/:id/runs` | List all eval runs for a specific agent version, newest first (paginated: `?limit=20`) |
 | `GET` | `/api/v1/runs` | List all eval runs (paginated: `?limit=50&offset=0`) |
 | `POST` | `/api/v1/runs` | Start a new eval run (rate-limited by `AGENTFORGE_MAX_CONCURRENT_RUNS`) |
 | `GET` | `/api/v1/runs/:id` | Get run status and results |
@@ -512,6 +566,12 @@ An **OpenAPI 3.1 spec** is available at [docs/openapi.yaml](docs/openapi.yaml) a
 | `GET` | `/api/v1/runs/:id/progress` | **Server-Sent Events** stream of live run progress (emits every ~2 s until terminal) |
 | `GET` | `/api/v1/diff` | Scorecard diff between two versions (`?v1=<uuid>&v2=<uuid>`) |
 | `POST` | `/api/v1/promote/:run_id` | Promote version to champion (runs all three gatekeeper gates) |
+| `POST` | `/api/v1/shadow-runs` | Start a shadow run comparing champion and candidate on live traffic |
+| `GET` | `/api/v1/shadow-runs/:id` | Get shadow run status and comparison result |
+| `POST` | `/api/v1/exports/finetune` | Export passing trace pairs from a completed eval run as JSONL |
+| `GET` | `/api/v1/exports/finetune/:id` | Get fine-tune export job status and download path |
+| `POST` | `/api/v1/benchmarks` | Run an agent against a standard benchmark suite (GAIA, AgentBench, or WebArena) |
+| `GET` | `/api/v1/benchmarks/:id` | Get benchmark run status, accuracy, and percentile rank |
 | `GET` | `/health` | Liveness probe — exempt from API key authentication |
 
 > **Concurrency limit on `POST /runs`:** to prevent accidental LLM cost floods, the server rejects new
@@ -557,12 +617,69 @@ curl -X POST http://localhost:8080/api/v1/runs \
     "threshold": 0.92,
     "provider": "openai",
     "judge_provider": "anthropic",
-    "auto_optimize": true
+    "auto_optimize": true,
+    "max_opt_iterations": 5
   }'
 
 # Poll for run results (replace with the run UUID returned above)
 curl http://localhost:8080/api/v1/runs/7dc53df0-c5fa-4f6c-b6b5-8d2d19afe5b1
 ```
+
+### Example: Shadow run (online eval)
+
+Shadow runs let you compare a candidate agent against the current champion on a sample of real traffic without touching your production path. The champion and candidate run in parallel on the same sampled scenarios; a `comparison_result` summarising win/lose/tie counts and per-dimension deltas is saved when the run completes.
+
+```bash
+# Start a shadow run with 10 % traffic routed to the candidate
+curl -X POST http://localhost:8080/api/v1/shadow-runs \
+  -H "Content-Type: application/json" \
+  -d '{
+    "champion_agent_id": "550e8400-e29b-41d4-a716-446655440000",
+    "candidate_agent_id": "6ba7b810-9dad-11d1-80b4-00c04fd430c8",
+    "traffic_percent": 10
+  }'
+
+# Poll for results
+curl http://localhost:8080/api/v1/shadow-runs/<shadow-run-id>
+```
+
+### Example: Export fine-tune data
+
+After a completed eval run, export passing trace pairs as a JSONL file for supervised fine-tuning. The three supported formats map to OpenAI, Anthropic, and HuggingFace `datasets`-compatible schemas.
+
+```bash
+# Enqueue an export job (format defaults to "openai")
+curl -X POST http://localhost:8080/api/v1/exports/finetune \
+  -H "Content-Type: application/json" \
+  -d '{
+    "run_id": "7dc53df0-c5fa-4f6c-b6b5-8d2d19afe5b1",
+    "format": "openai"
+  }'
+
+# Poll until status == "complete", then read file_path for the JSONL location
+curl http://localhost:8080/api/v1/exports/finetune/<export-id>
+```
+
+Supported `format` values: `"openai"` (chat completion pairs), `"anthropic"` (messages API pairs), `"huggingface"` (HuggingFace `datasets`-compatible JSONL).
+
+### Example: Run a standard benchmark
+
+Benchmark runs evaluate an agent against a fixed task set from a public benchmark suite and return an accuracy score plus a percentile rank against the baseline public leaderboard.
+
+```bash
+# Start a GAIA benchmark run
+curl -X POST http://localhost:8080/api/v1/benchmarks \
+  -H "Content-Type: application/json" \
+  -d '{
+    "agent_id": "550e8400-e29b-41d4-a716-446655440000",
+    "suite": "gaia"
+  }'
+
+# Poll for results (accuracy + percentile_rank populated when complete)
+curl http://localhost:8080/api/v1/benchmarks/<benchmark-run-id>
+```
+
+Supported `suite` values: `"gaia"`, `"agentbench"`, `"webarena"`. See [Benchmark Suites](#benchmark-suites) for details.
 
 ---
 
@@ -628,7 +745,12 @@ All configuration is via environment variables. See [`.env.example`](.env.exampl
 | `AGENTFORGE_NVIDIA_MODEL` | `mistralai/mistral-small-4-119b-2603` | NVIDIA NIM model for agent runs (base URL is always `https://integrate.api.nvidia.com/v1`) |
 | `AGENTFORGE_OLLAMA_BASE_URL` | `http://localhost:11434/v1` | Ollama base URL (OpenAI-compatible endpoint) |
 | `AGENTFORGE_OLLAMA_MODEL` | `llama3.2:3b` | Ollama model; overrides any model ID in the agent file at runtime |
-| `AGENTFORGE_JUDGE_PROVIDER` | `openai` | LLM provider for the judge: `openai` \| `anthropic` \| `nvidia` \| `ollama` |
+| `AWS_ACCESS_KEY_ID` | — | AWS access key for Bedrock (can also be supplied via instance role or IRSA) |
+| `AWS_SECRET_ACCESS_KEY` | — | AWS secret access key for Bedrock |
+| `AWS_SESSION_TOKEN` | — | AWS session token (only required for temporary credentials) |
+| `AWS_REGION` | `us-east-1` | AWS region for Bedrock API calls |
+| `AGENTFORGE_BEDROCK_MODEL` | `anthropic.claude-3-haiku-20240307-v1:0` | Bedrock model ID for agent runs |
+| `AGENTFORGE_JUDGE_PROVIDER` | `openai` | LLM provider for the judge: `openai` \| `anthropic` \| `nvidia` \| `ollama` \| `bedrock` |
 | `AGENTFORGE_JUDGE_MODEL` | `gpt-4o` | Judge model ID |
 | `AGENTFORGE_JUDGE_BASE_URL` | _(provider default)_ | Override the judge base URL (e.g., Azure OpenAI or OpenAI-compatible proxy) |
 | `AGENTFORGE_JUDGE_API_KEY` | _(provider default)_ | Override the judge API key (useful when `AGENTFORGE_JUDGE_BASE_URL` points to a different endpoint) |
@@ -650,6 +772,7 @@ All configuration is via environment variables. See [`.env.example`](.env.exampl
 | `AGENTFORGE_WEIGHT_SCHEMA` | `0.15` | Schema-compliance scoring weight |
 | `AGENTFORGE_WEIGHT_INSTR` | `0.07` | Instruction-adherence scoring weight |
 | `AGENTFORGE_WEIGHT_PATH` | `0.03` | Path-efficiency scoring weight |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | — | When set, exports OpenTelemetry traces to this OTLP endpoint (e.g., `http://otel-collector:4318`). Requires the `agentforge-observability` crate to be compiled in. |
 
 > **`REDIS_URL` vs `AGENTFORGE_*`:** Redis uses the bare `REDIS_URL` key (compatible with most hosting platforms). All other app-level settings use the `AGENTFORGE_` prefix.
 
@@ -920,6 +1043,96 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for dev environment setup, commit message
 | Cost optimizer | ✅ Implemented — model downgrade recommendations via `--cost-optimize` CLI flag |
 
 > **Web dashboard** (`web/`) is already included in this repo and served via the Docker Compose stack on port 3000.
+
+---
+
+## Multi-Agent Testing
+
+The `agentforge-multiagent` crate lets you evaluate composed agent teams described as directed graphs. Each node in the graph is a full `AgentFile`; edges thread the output of one node into the input context of the next.
+
+### Graph spec (YAML)
+
+```yaml
+# multi-agent-graph.yaml
+id: "customer-triage-graph"
+nodes:
+  - id: "classifier"
+    role: "Classify the incoming request"
+    agent:
+      name: "request-classifier"
+      model:
+        provider: openai
+        model_id: gpt-4o-mini
+      system_prompt: |
+        Classify the customer request into one of: billing, technical, general.
+        Output JSON: {"category": "<category>", "confidence": <0-1>}
+      output_schema:
+        type: object
+        properties:
+          category: { type: string, enum: [billing, technical, general] }
+          confidence: { type: number }
+        required: [category, confidence]
+
+  - id: "resolver"
+    role: "Resolve the classified request"
+    agent:
+      name: "request-resolver"
+      model:
+        provider: openai
+        model_id: gpt-4o
+      system_prompt: |
+        You are a resolution specialist. The classifier node output is available
+        in your context under the key "classifier". Use it to route appropriately.
+
+edges:
+  - from: "classifier"
+    to: "resolver"
+    input_key: "classifier"   # key injected into resolver's scenario context
+```
+
+### API
+
+Pass the graph spec to `POST /api/v1/agents` with `Content-Type: application/yaml`. The API will validate the graph topology (cycle detection included) and register each node agent. Then start a run as normal; the runner automatically executes nodes in topological order and threads outputs between them.
+
+### Scoring
+
+Each node is scored independently across the six standard dimensions. A `composite_score` (unweighted mean of node scores) and a `pass_rate` across all node traces are reported in the `MultiAgentScorecard` returned by `GET /api/v1/runs/:id/scorecard`.
+
+---
+
+## Benchmark Suites
+
+The `agentforge-benchmarks` crate evaluates an agent against three public benchmark suites. Start a benchmark run via `POST /api/v1/benchmarks` and poll `GET /api/v1/benchmarks/:id` for results.
+
+### Supported suites
+
+| Suite | `suite` value | Task type | Metric |
+|-------|--------------|-----------|--------|
+| [GAIA](https://huggingface.co/datasets/gaia-benchmark/GAIA) | `"gaia"` | Real-world multi-step assistant tasks (Level 1–3) | Exact-match accuracy (%) |
+| [AgentBench](https://github.com/THUDM/AgentBench) | `"agentbench"` | Code, DB, OS, web interaction | Weighted overall score |
+| [WebArena](https://webarena.dev) | `"webarena"` | Browser-based web tasks | Task success rate (%) |
+
+### Accuracy and percentile rank
+
+- `accuracy` — fraction of tasks answered correctly (`correct / total_tasks`).
+- `percentile_rank` — where your score falls relative to submissions tracked by AgentForge's built-in normalizer. A rank of `0.75` means the agent outperforms 75 % of tracked runs for that suite.
+
+### Example output
+
+```json
+{
+  "id": "b1e3...",
+  "agent_id": "550e...",
+  "suite": "gaia",
+  "status": "complete",
+  "total_tasks": 165,
+  "correct": 132,
+  "accuracy": 0.8,
+  "percentile_rank": 0.82,
+  "started_at": "2026-05-25T02:00:00Z",
+  "completed_at": "2026-05-25T02:18:43Z"
+}
+```
 
 ---
 
