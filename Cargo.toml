@@ -98,7 +98,7 @@ async-trait = "0.1"
 
 # Testing
 wiremock = "0.6"
-mockall = "0.14"
+mockall = "0.15"
 pretty_assertions = "1"
 tokio-test = "0.4"
 
