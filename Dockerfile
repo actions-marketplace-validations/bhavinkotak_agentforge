@@ -16,7 +16,7 @@ COPY crates/agentforge-db/.sqlx/ crates/agentforge-db/.sqlx/
 RUN SQLX_OFFLINE=true cargo build --release --package agentforge-api --package agentforge-cli
 
 # ─── API server runtime ────────────────────────────────────────────────────────
-FROM alpine:3.21 AS api
+FROM alpine:3.24 AS api
 
 RUN apk add --no-cache ca-certificates curl
 
@@ -29,7 +29,7 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
 CMD ["./agentforge-api"]
 
 # ─── CLI runtime (used by GitHub Action and direct usage) ─────────────────────
-FROM alpine:3.21 AS cli
+FROM alpine:3.24 AS cli
 
 RUN apk add --no-cache ca-certificates
 
